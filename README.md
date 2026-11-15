@@ -17,7 +17,7 @@
 | 默认：对话 | 需要时：Agent |
 | --- | --- |
 | 流式回答、Markdown、代码高亮与复制 | 多轮工具循环，最多 15 轮 |
-| 深度思考（`deepseek-reasoner`） | 联网搜索、读取/列出/写入文件、任务计划 |
+| 对话模型可选 Flash / Pro；支持深度思考 | 联网搜索、读取/列出/写入文件、任务计划 |
 | 联网搜索与引用来源 | 写文件前 diff 审批，可拒绝 |
 | 历史记录、搜索、导出、主题、移动端 | 自动 `.bak` / `.bak.1` 备份，原子写入 |
 | 无限壁纸、毛玻璃面板、参数调节 | 产出文件可预览 / 下载 / 打开所在文件夹 |
@@ -137,9 +137,9 @@ node server.mjs
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | 空 | 优先生效；其次读取 `secrets.json` |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 可指向兼容 OpenAI Chat Completions 的服务 |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | 普通对话模型 |
-| `DEEPSEEK_REASONER_MODEL` | `deepseek-reasoner` | 深度思考模型 |
-| `DEEPSEEK_AGENT_MODEL` | `deepseek-chat` | Agent 工具循环模型 |
+| `DEEPSEEK_FLASH_MODEL` | `deepseek-flash` | Flash 对话模型 |
+| `DEEPSEEK_PRO_MODEL` | `deepseek-v4-pro` | Pro 对话模型 |
+| `DEEPSEEK_AGENT_MODEL` | `deepseek-v4-pro` | Agent 工具循环模型 |
 | `PORT` | `4173` | 本地端口 |
 | `HOST` | `127.0.0.1` | 监听地址。改成 `0.0.0.0` 前请阅读安全说明 |
 | `DEEPSEEK_WEB_DATA` | 源码目录 / EXE 的 `%LOCALAPPDATA%` | 数据目录覆盖 |
@@ -167,6 +167,17 @@ EXE 模式下写入：
 ```text
 环境变量 DEEPSEEK_API_KEY  →  secrets.json
 ```
+
+## 模型与推理等级
+
+- 聊天输入框右下角可选 **Flash / Pro**：
+  - Flash：更快，支持图像理解；
+  - Pro：更强，适合复杂推理；
+- “深度思考”开关控制是否开启思考模式；开启后 Chat Completions 请求会带 `thinking: {type: "enabled"}`，关闭时带 `disabled`；
+- Agent 使用 **Pro**，输入框右下角可单独选择推理等级：
+  - 关闭 / 低 / 高 / 最高，对应 `reasoning_effort: none/low/high/max`；
+  - 默认“高”；
+- 这些参数通过 Chat Completions API 的 `thinking` 和 `reasoning_effort` 字段传递。
 
 ## 壁纸与玻璃面板
 
@@ -347,7 +358,7 @@ Agent 的工程约束参考了本机的 **Professional Agent** 项目：
 - 产出卡片点击后默认打开预览；预览弹窗里再选择“下载文件”或“打开所在文件夹”。
 - 浏览器 `localStorage` 存对话，容量有限；大量附件建议直接让 Agent 读工作区文件。
 - 壁纸图片使用浏览器本地存储，清除站点数据会丢失；数量不限，但仍受浏览器存储配额限制。
-- 没有实现多模型路由、云同步、团队协作。
+- 没有实现云同步、团队协作。
 
 ## 检查
 

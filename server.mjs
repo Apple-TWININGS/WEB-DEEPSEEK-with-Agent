@@ -34,7 +34,7 @@ const DEFAULT_WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.2.5";
+const VERSION = "1.2.6";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -52,9 +52,13 @@ const AUTH_REQUIRED = !!ACCESS_PASSWORD;
 const API_BASE = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
 const CHAT_ENDPOINT = API_BASE.endsWith("/chat/completions") ? API_BASE : API_BASE + "/chat/completions";
 const MODELS_ENDPOINT = API_BASE.replace(/\/chat\/completions$/, "") + "/models";
-const MODEL_CHAT = process.env.DEEPSEEK_MODEL || "deepseek-chat";
-const MODEL_REASONER = process.env.DEEPSEEK_REASONER_MODEL || "deepseek-reasoner";
-const MODEL_AGENT = process.env.DEEPSEEK_AGENT_MODEL || "deepseek-chat";
+const MODEL_FLASH = process.env.DEEPSEEK_FLASH_MODEL || "deepseek-flash";
+const MODEL_PRO = process.env.DEEPSEEK_PRO_MODEL || "deepseek-v4-pro";
+const MODEL_CHAT = MODEL_FLASH;
+const MODEL_REASONER = MODEL_PRO;
+const MODEL_AGENT = process.env.DEEPSEEK_AGENT_MODEL || MODEL_PRO;
+const AGENT_EFFORTS = ["none", "low", "high", "max"];
+const AGENT_DEFAULT_EFFORT = "high";
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_AGENT_ROUNDS = 15;
 const MAX_TOOL_CALLS_PER_ROUND = 4;
@@ -101,6 +105,18 @@ const agentRuns = new Map();
 function log(...args) {
   const time = new Date().toISOString().slice(11, 19);
   console.log(`[${time}]`, ...args);
+}
+
+function normalizeEffort(value, fallback = AGENT_DEFAULT_EFFORT) {
+  const effort = String(value || "").toLowerCase();
+  return AGENT_EFFORTS.includes(effort) ? effort : fallback;
+}
+
+function reasoningPayload(effort) {
+  const level = normalizeEffort(effort);
+  return level === "none"
+    ? { thinking: { type: "disabled" } }
+    : { thinking: { type: "enabled" }, reasoning_effort: level };
 }
 
 function generateAccessPassword() {
@@ -927,7 +943,10 @@ async function handleChat(req, res, body) {
   const messages = normalizeMessages(body.messages);
   if (!messages.length) return sendJson(res, 400, { error: "消息不能为空。" });
 
-  const model = body.model === "deepseek-reasoner" ? MODEL_REASONER : MODEL_CHAT;
+  const legacyReasoner = body.model === "deepseek-reasoner";
+  const wantsPro = body.model === "pro" || body.model === "deepseek-v4-pro" || body.model === MODEL_PRO || legacyReasoner;
+  const model = wantsPro ? MODEL_PRO : MODEL_FLASH;
+  const deepThink = body.deepThink === true || body.thinking === true || legacyReasoner;
   const sse = startSSE(res);
   const controller = new AbortController();
   let clientClosed = false;
@@ -941,15 +960,16 @@ async function handleChat(req, res, body) {
     if (body.webSearch) {
       finalMessages = await maybeSearchForChat(messages, sse);
     }
-    sse.send({ type: "meta", model, search: !!body.webSearch });
+    sse.send({ type: "meta", model, search: !!body.webSearch, deepThink });
 
     const payload = {
       model,
       messages: finalMessages,
       stream: true,
-      max_tokens: 4096,
+      max_tokens: deepThink ? 8192 : 4096,
+      ...reasoningPayload(deepThink ? "high" : "none"),
     };
-    if (model !== MODEL_REASONER) payload.temperature = 0.7;
+    if (!deepThink) payload.temperature = 0.7;
 
     const upstream = await requestModel(payload, controller.signal);
     const result = await readModelStream(upstream, (delta) => {
@@ -1581,11 +1601,12 @@ async function finalizeWithEvidence(messages, evidence, run, unfinished = []) {
   ].join("\n");
   try {
     const res = await requestModel({
-      model: MODEL_AGENT,
+      model: run.model || MODEL_AGENT,
       messages: messages.concat([{ role: "user", content: instruction }]),
       stream: false,
-      max_tokens: 1600,
+      max_tokens: 2400,
       temperature: 0.3,
+      ...reasoningPayload(run.effort || AGENT_DEFAULT_EFFORT),
     }, run.controller.signal);
     const data = await readModelJson(res);
     const text = (data.content || "").trim();
@@ -1629,13 +1650,14 @@ async function runAgent(run, inputMessages, sse) {
 
     const result = await (async () => {
       const res = await requestModel({
-        model: MODEL_AGENT,
+        model: run.model || MODEL_AGENT,
         messages,
         stream: true,
         max_tokens: 8192,
         temperature: 0.4,
         tools: AGENT_TOOLS,
         tool_choice: "auto",
+        ...reasoningPayload(run.effort || AGENT_DEFAULT_EFFORT),
       }, run.controller.signal);
       return readModelStream(res);
     })();
@@ -1802,6 +1824,8 @@ async function handleAgent(req, res, body) {
     pending: new Map(),
     startedAt: Date.now(),
     workspace: runWorkspace,
+    model: MODEL_AGENT,
+    effort: normalizeEffort(body.reasoningEffort),
     fullAccess: !!(body.fullAccess === true && body.fullAccessAck === true),
   };
   agentRuns.set(runId, run);
@@ -1827,7 +1851,7 @@ async function handleAgent(req, res, body) {
   });
 
   try {
-    sse.send({ type: "run", runId, model: MODEL_AGENT });
+    sse.send({ type: "run", runId, model: run.model, effort: run.effort });
     await runAgent(run, messages, sse);
     sse.send({
       type: "done",
@@ -2063,7 +2087,19 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         version: VERSION,
         key,
-        models: { chat: MODEL_CHAT, reasoner: MODEL_REASONER, agent: MODEL_AGENT },
+        models: {
+          flash: MODEL_FLASH,
+          pro: MODEL_PRO,
+          chat: MODEL_FLASH,
+          reasoner: MODEL_PRO,
+          agent: MODEL_AGENT,
+        },
+        modelOptions: [
+          { id: "flash", label: "Flash", description: "快，支持图像理解" },
+          { id: "pro", label: "Pro", description: "更强，适合复杂任务" },
+        ],
+        agentEfforts: AGENT_EFFORTS,
+        agentDefaultEffort: AGENT_DEFAULT_EFFORT,
         search: true,
         searchProviders: searchProviderNames(),
         searchConfig: {
@@ -2219,7 +2255,7 @@ server.listen(PORT, HOST, () => {
   const status = keyStatus();
   const url = `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}`;
   log("DeepSeek Web 已启动:", url);
-  log("模型:", MODEL_CHAT, "/", MODEL_REASONER, "/ agent:", MODEL_AGENT);
+  log("模型:", MODEL_FLASH, "/", MODEL_PRO, "/ agent:", MODEL_AGENT);
   log("API Key:", status.configured ? `已配置（${status.source}，${status.hint}）` : "未配置（演示模式）");
   log("工作区:", WORKSPACE);
   if (AUTH_REQUIRED) {

@@ -23,6 +23,8 @@
     theme: "system",
     deepThink: false,
     webSearch: false,
+    chatModel: "flash",
+    agentEffort: "high",
     mode: "chat",
     sidebarCollapsed: false,
     bannerDismissed: false,
@@ -365,6 +367,8 @@
         })
         : [];
       if (["light", "dark", "system"].indexOf(state.settings.theme) === -1) state.settings.theme = "system";
+      if (["flash", "pro"].indexOf(state.settings.chatModel) === -1) state.settings.chatModel = "flash";
+      if (["none", "low", "high", "max"].indexOf(state.settings.agentEffort) === -1) state.settings.agentEffort = "high";
       if (state.settings.mode !== "agent") state.settings.mode = "chat";
       state.conversations = Array.isArray(raw.conversations)
         ? raw.conversations.map(sanitizeConversation).filter(Boolean)
@@ -2052,7 +2056,17 @@
     els.composer.classList.toggle("is-agent", mode === "agent");
     els.chatTools.hidden = mode === "agent";
     els.agentTools.hidden = mode !== "agent";
-    els.modelLabel.textContent = mode === "agent" ? "DeepSeek Agent" : (state.settings.deepThink ? "DeepSeek Reasoner" : "DeepSeek Chat");
+    if (els.chatModelSelect) {
+      els.chatModelSelect.hidden = mode === "agent";
+      els.chatModelSelect.value = state.settings.chatModel;
+    }
+    if (els.agentEffortSelect) {
+      els.agentEffortSelect.hidden = mode !== "agent";
+      els.agentEffortSelect.value = state.settings.agentEffort;
+    }
+    if (els.modelLabel) {
+      els.modelLabel.textContent = mode === "agent" ? "DeepSeek Agent" : (state.settings.deepThink ? "DeepSeek Reasoner" : "DeepSeek Chat");
+    }
     els.composerInput.placeholder = mode === "agent" ? "描述一个任务，Agent 会规划并执行…" : "给 DeepSeek 发送消息";
     els.thinkToggle.setAttribute("aria-pressed", state.settings.deepThink ? "true" : "false");
     els.searchToggle.setAttribute("aria-pressed", state.settings.webSearch ? "true" : "false");
@@ -2193,7 +2207,9 @@
       error: "",
       demo: !!demoFlag,
       mode: mode,
-      modelLabel: mode === "agent" ? "Agent" : (state.settings.deepThink ? "DeepSeek Reasoner" : "DeepSeek Chat"),
+      modelLabel: mode === "agent"
+        ? "Agent · Pro"
+        : ("DeepSeek " + (state.settings.chatModel === "pro" ? "Pro" : "Flash") + (state.settings.deepThink ? " · 思考" : "")),
       feedback: "",
       sources: [],
       usage: null,
@@ -2340,7 +2356,8 @@
   async function runRealChat(conv, msg, signal) {
     var body = {
       messages: buildModelMessages(conv, msg.id),
-      model: state.settings.deepThink ? "deepseek-reasoner" : "deepseek-chat",
+      model: state.settings.chatModel === "pro" ? "pro" : "flash",
+      deepThink: !!state.settings.deepThink,
       webSearch: !!state.settings.webSearch
     };
     var res = await fetch("/api/chat", {
@@ -2439,7 +2456,8 @@
     var body = {
       runId: runId,
       messages: buildModelMessages(conv, msg.id),
-      model: "deepseek-chat",
+      model: "pro",
+      reasoningEffort: state.settings.agentEffort || "high",
       workspace: conv.workspace || state.workspace.defaultPath || state.workspace.path || "",
       fullAccess: fullAccess,
       fullAccessAck: fullAccess
@@ -3769,6 +3787,19 @@
         stopStreaming();
       }
     });
+    els.chatModelSelect.addEventListener("change", function () {
+      state.settings.chatModel = this.value === "pro" ? "pro" : "flash";
+      updateModeUI();
+      scheduleSave();
+      toast(state.settings.chatModel === "pro" ? "已选择 DeepSeek Pro" : "已选择 DeepSeek Flash");
+    });
+    els.agentEffortSelect.addEventListener("change", function () {
+      var level = ["none", "low", "high", "max"].indexOf(this.value) >= 0 ? this.value : "high";
+      state.settings.agentEffort = level;
+      updateModeUI();
+      scheduleSave();
+      toast("Agent 推理等级：" + ({ none: "关闭", low: "低", high: "高", max: "最高" })[level]);
+    });
     els.thinkToggle.addEventListener("click", function () {
       if (state.settings.mode === "agent") return;
       if (state.streaming) return toast("请先停止当前生成", "error");
@@ -4041,7 +4072,8 @@
     els.agentTools = $("#agentTools");
     els.thinkToggle = $("#thinkToggle");
     els.searchToggle = $("#searchToggle");
-    els.modelLabel = $("#modelLabel");
+    els.chatModelSelect = $("#chatModelSelect");
+    els.agentEffortSelect = $("#agentEffortSelect");
     els.sendBtn = $("#sendBtn");
     els.composerHint = $("#composerHint");
     els.toastStack = $("#toastStack");
