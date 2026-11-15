@@ -33,6 +33,7 @@ const DATA_ROOT = globalThis.__DEEPSEEK_SEA_DATA_ROOT__ || process.env.DEEPSEEK_
 const DEFAULT_WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
+const IMPORT_TOKEN_PATH = path.join(DATA_ROOT, "deepseek-web-token.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
 const VERSION = "1.2.7";
 const HOST = process.env.HOST || "127.0.0.1";
@@ -508,6 +509,139 @@ function workspaceInfo() {
     dataRoot: DATA_ROOT,
     exists: fs.existsSync(WORKSPACE),
   };
+}
+
+/* ============================================================
+   chat.deepseek.com history import
+   ============================================================ */
+function readImportToken() {
+  try {
+    const data = safeJsonParse(fs.readFileSync(IMPORT_TOKEN_PATH, "utf8"), {}) || {};
+    return typeof data.token === "string" ? data.token : "";
+  } catch {
+    return "";
+  }
+}
+
+function saveImportToken(token) {
+  const tmp = IMPORT_TOKEN_PATH + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify({ token }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, IMPORT_TOKEN_PATH);
+}
+
+function clearImportToken() {
+  try { fs.unlinkSync(IMPORT_TOKEN_PATH); } catch { /* already absent */ }
+}
+
+function normalizeUserToken(raw) {
+  let value = String(raw || "").trim();
+  if (!value) throw new Error("请先粘贴 userToken。");
+  if (value.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(value);
+      value = String(parsed.value || parsed.token || "").trim();
+    } catch {
+      throw new Error("userToken 的 JSON 格式无法解析。");
+    }
+  }
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
+  }
+  if (value.length < 10 || value.length > 20000) throw new Error("userToken 长度异常。");
+  return value;
+}
+
+function officialHeaders(token) {
+  return {
+    Authorization: "Bearer " + token,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "x-app-version": "20240105.0",
+    "x-client-locale": "zh_CN",
+    "x-device-id": "ds-web-" + crypto.randomBytes(6).toString("hex"),
+    "x-os": "web",
+    "x-requested-with": "XMLHttpRequest",
+    Origin: "https://chat.deepseek.com",
+    Referer: "https://chat.deepseek.com/",
+    "User-Agent": "Mozilla/5.0",
+  };
+}
+
+async function officialJson(pathname, token) {
+  const res = await fetch("https://chat.deepseek.com" + pathname, {
+    headers: officialHeaders(token),
+    signal: AbortSignal.timeout(30000),
+  });
+  const text = await res.text();
+  if (text.length > 2_000_000) throw new Error("该 DeepSeek 响应超过 2M 字符。");
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error("DeepSeek 返回的不是 JSON，可能登录态已失效。"); }
+  if (!res.ok) throw new Error("DeepSeek 返回 HTTP " + res.status);
+  if (data.code !== undefined && data.code !== 0) {
+    throw new Error(String(data.msg || "DeepSeek 接口返回错误 code=" + data.code));
+  }
+  if (data.data && data.data.biz_code !== undefined && data.data.biz_code !== 0) {
+    throw new Error(String(data.data.biz_msg || "DeepSeek 接口返回业务错误"));
+  }
+  return data;
+}
+
+function officialSessions(data) {
+  const root = (data && data.data) || data || {};
+  const biz = root.biz_data || root;
+  const list = biz.chat_sessions || biz.sessions || biz.chat_session_list || biz.list;
+  return (Array.isArray(list) ? list : []).map((item) => ({
+    id: String(item.id || item.chat_session_id || ""),
+    title: String(item.title || "").slice(0, 160),
+    updatedAt: item.updated_at || item.updatedAt || item.inserted_at || null,
+  })).filter((item) => item.id);
+}
+
+function officialMessageText(message) {
+  const fragments = Array.isArray(message.fragments) ? message.fragments : [];
+  const pick = (type) => fragments
+    .filter((f) => f && String(f.type || "").toUpperCase() === type)
+    .map((f) => typeof f.content === "string" ? f.content : legacyValue(f.content))
+    .filter((s) => s && s.trim())
+    .join("\n\n");
+  return {
+    user: pick("REQUEST"),
+    answer: pick("RESPONSE"),
+    reasoning: pick("THINK"),
+    fallback: legacyValue(message.content),
+  };
+}
+
+function legacyValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((item) => item && (item.text || item.content) ? String(item.text || item.content) : "").join("\n");
+  if (typeof value === "object") return String(value.text || value.content || "");
+  return String(value);
+}
+
+function officialMessages(data) {
+  const root = (data && data.data) || data || {};
+  const biz = root.biz_data || root;
+  const list = biz.chat_messages || biz.messages || biz.chat_message_list || biz.history || biz.message_list;
+  const rows = Array.isArray(list) ? list : [];
+  const out = [];
+  for (const message of rows) {
+    const role = String(message.role || "").toLowerCase();
+    if (role !== "user" && role !== "assistant") continue;
+    const text = officialMessageText(message);
+    const content = role === "user" ? (text.user || text.fallback) : (text.answer || text.fallback);
+    if (!content && !text.reasoning) continue;
+    const seconds = Number(message.inserted_at);
+    const createdAt = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : 0;
+    out.push({
+      role,
+      content: content || (role === "user" ? "（附件消息，没有文字）" : "（这条回复没有正文）"),
+      reasoning: role === "assistant" ? text.reasoning || "" : "",
+      createdAt,
+    });
+  }
+  return out;
 }
 
 /* ============================================================
@@ -2078,6 +2212,53 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, Object.assign({ ok: true }, data));
       } catch (err) {
         return sendJson(res, 400, { error: "无法浏览目录：" + err.message });
+      }
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/deepseek-web/status") {
+      return sendJson(res, 200, { ok: true, configured: !!readImportToken() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/deepseek-web/token") {
+      const body = await readJson(req, 64 * 1024);
+      try {
+        const token = normalizeUserToken(body.token);
+        saveImportToken(token);
+        return sendJson(res, 200, { ok: true, configured: true });
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/deepseek-web/clear") {
+      clearImportToken();
+      return sendJson(res, 200, { ok: true, configured: false });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/deepseek-web/sessions") {
+      const token = readImportToken();
+      if (!token) return sendJson(res, 400, { error: "请先配置 userToken。" });
+      try {
+        const data = await officialJson("/api/v0/chat_session/fetch_page?count=100", token);
+        return sendJson(res, 200, { ok: true, sessions: officialSessions(data) });
+      } catch (err) {
+        return sendJson(res, 502, { error: "获取对话目录失败：" + err.message });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/deepseek-web/history") {
+      const token = readImportToken();
+      if (!token) return sendJson(res, 400, { error: "请先配置 userToken。" });
+      const body = await readJson(req, 64 * 1024);
+      const sessionId = String(body.sessionId || "").trim();
+      if (!/^[A-Za-z0-9_-]{4,120}$/.test(sessionId)) return sendJson(res, 400, { error: "sessionId 无效。" });
+      try {
+        const data = await officialJson("/api/v0/chat/history_messages?chat_session_id=" + encodeURIComponent(sessionId), token);
+        const messages = officialMessages(data);
+        if (!messages.length) return sendJson(res, 400, { error: "该对话没有可导入的文本消息。" });
+        return sendJson(res, 200, { ok: true, sessionId, messages });
+      } catch (err) {
+        return sendJson(res, 502, { error: "读取对话失败：" + err.message });
       }
     }
 

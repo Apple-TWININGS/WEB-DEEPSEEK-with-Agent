@@ -20,6 +20,7 @@
 | 对话模型可选 Flash / Pro；支持深度思考 | 联网搜索、读取/列出/写入文件、任务计划 |
 | 联网搜索与引用来源 | 写文件前 diff 审批，可拒绝 |
 | 历史记录、搜索、导出、主题、移动端 | 自动 `.bak` / `.bak.1` 备份，原子写入 |
+| 从 chat.deepseek.com 导入历史对话 | 导入为普通对话或 Agent 会话 |
 | 无限壁纸、毛玻璃面板、参数调节 | 产出文件可预览 / 下载 / 打开所在文件夹 |
 
 Agent 只在 Agent 入口创建的对话里启动，不会在普通聊天里擅自调用工具。
@@ -206,6 +207,26 @@ EXE 模式下写入：
 - 设置里显示“已用 / 可用配额”，并在空间紧张时阻止继续添加；
 - 不上传服务器。清除浏览器站点数据会同时删除壁纸。
 
+## 从 DeepSeek 网页导入历史对话
+
+设置 → **DeepSeek 对话导入**：
+
+1. 浏览器登录 `chat.deepseek.com`；
+2. `F12` → **Application** → **Local Storage** → 复制 `userToken` 的值；
+3. 粘贴到网页端并保存；
+4. 点“获取对话目录”（最近 100 条）；
+5. 每条对话可选：
+   - **导入为对话**：新建普通对话并带上历史；
+   - **导入为 Agent**：先选工作区，再新建 Agent 对话。
+
+说明：
+
+- `userToken` 只写入本机数据目录的 `deepseek-web-token.json`，不会回显，也不会发给 `chat.deepseek.com` 之外的地址；
+- 使用 DeepSeek 网页端非官方内部接口，接口改版或 token 过期时可能失败；
+- 只导入正文和思维链，网页搜索/工具步骤不会保留；
+- 一次最多拉取 100 条对话，单条历史上限约 2M 字符；
+- 这是迁移历史，不会自动同步；重复导入会生成重复对话。
+
 ## Agent 工作区与权限
 
 **工作区**决定 Agent 能读写哪个目录，并且是**每个对话单独设置**的。
@@ -332,6 +353,10 @@ dist\DeepSeek-Web.exe.sha256
 | `POST` | `/api/chat` | SSE 流式聊天，可选服务端联网搜索 |
 | `POST` | `/api/agent` | SSE Agent 执行流 |
 | `POST` | `/api/agent/decision` | 批准/拒绝一次文件写入 |
+| `GET` | `/api/deepseek-web/status` | 是否已配置网页 `userToken` |
+| `POST` | `/api/deepseek-web/token` | 保存 `userToken` |
+| `GET` | `/api/deepseek-web/sessions` | 拉取 DeepSeek 网页对话目录 |
+| `POST` | `/api/deepseek-web/history` | 读取一条网页对话的正文/思维链 |
 | `GET` | `/api/files/<path>` | 下载 Agent 产物 |
 | `POST` | `/api/reveal` | 在电脑文件管理器中定位产物 |
 

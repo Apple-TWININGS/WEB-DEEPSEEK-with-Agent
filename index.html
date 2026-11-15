@@ -480,6 +480,27 @@
         <p class="settings-hint"><a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">前往 DeepSeek 开放平台获取 Key<svg class="inline-icon"><use href="#i-external"/></svg></a> · 本地界面不会把 Key 发给除模型接口外的任何地址。</p>
       </section>
 
+      <section class="settings-section import-settings" id="deepseekImportSection">
+        <div class="settings-section-head">
+          <div>
+            <h3>DeepSeek 对话导入</h3>
+            <p>从 chat.deepseek.com 导入历史对话，可作为普通对话或 Agent 会话继续。</p>
+          </div>
+          <span class="status-pill" id="importTokenStatus"><span></span>未配置</span>
+        </div>
+        <div class="import-token-row">
+          <input id="deepseekTokenInput" type="password" placeholder="粘贴 userToken（F12 → Application → Local Storage → userToken）" autocomplete="off" spellcheck="false">
+          <button class="btn btn-primary btn-small" id="importTokenSave" type="button">保存</button>
+          <button class="btn btn-ghost btn-small" id="importTokenClear" type="button">清除</button>
+        </div>
+        <p class="settings-hint">userToken 只保存在本机数据目录，不会回显；仅用于请求 chat.deepseek.com。</p>
+        <div class="settings-actions">
+          <button class="btn btn-ghost btn-small" id="importFetchSessions" type="button"><svg><use href="#i-refresh"/></svg>获取对话目录</button>
+          <span class="import-fetch-note" id="importFetchNote">最近 100 条</span>
+        </div>
+        <div class="import-session-list" id="importSessionList"></div>
+      </section>
+
       <section class="settings-section">
         <div class="settings-section-head">
           <div>

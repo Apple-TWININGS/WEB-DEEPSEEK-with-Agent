@@ -79,6 +79,8 @@
     workspaceBrowsePath: "",
     previewArtifact: null,
     previewObjectUrl: null,
+    pendingImport: null,
+    importSessions: [],
     fullAccess: { active: false, expiresAt: 0 },
     fullAccessTimer: null
   };
@@ -1187,7 +1189,10 @@
   }
 
   function closeWorkspaceDialog() {
+    var hadPending = !!state.pendingImport;
+    state.pendingImport = null;
     if (els.workspaceDialog && els.workspaceDialog.open) closeDialog(els.workspaceDialog);
+    if (hadPending) toast("已取消导入");
   }
 
   async function openWorkspaceDialog() {
@@ -1258,8 +1263,15 @@
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) throw new Error(data.error || "切换失败");
       disableFullAccess(true);
+      var pending = state.pendingImport;
       var conv = makeConversation("agent");
       conv.workspace = data.path || state.workspaceBrowsePath;
+      if (pending) {
+        conv.title = pending.title;
+        conv.messages = pending.messages;
+        conv.hasAgent = true;
+        state.pendingImport = null;
+      }
       state.conversations.unshift(conv);
       state.activeId = conv.id;
       state.settings.mode = "agent";
@@ -1271,11 +1283,195 @@
       renderSidebar();
       renderChat({ forceBottom: true });
       scheduleSave();
-      toast("Agent 对话已创建", "success");
+      toast(pending ? "已导入为 Agent 对话" : "Agent 对话已创建", "success");
       setTimeout(function () { els.composerInput.focus(); }, 30);
     } catch (e) {
       els.workspaceError.textContent = friendlyError(e);
       els.workspaceSelect.disabled = false;
+    }
+  }
+
+  /* ============================================================
+     chat.deepseek.com history import
+     ============================================================ */
+  async function loadImportStatus() {
+    try {
+      var res = await fetch("/api/deepseek-web/status", { cache: "no-store" });
+      if (res.status === 401) { showLoginScreen(); return; }
+      if (!res.ok) return;
+      var data = await res.json();
+      var on = !!data.configured;
+      if (els.importTokenStatus) {
+        els.importTokenStatus.className = "status-pill " + (on ? "is-ok" : "");
+        els.importTokenStatus.innerHTML = "<span></span>" + (on ? "已配置" : "未配置");
+      }
+      if (els.deepseekTokenInput) {
+        els.deepseekTokenInput.placeholder = on
+          ? "已配置 userToken；重新粘贴可替换"
+          : "粘贴 userToken（F12 → Application → Local Storage → userToken）";
+      }
+      if (els.importFetchSessions) els.importFetchSessions.disabled = !on;
+    } catch (e) { /* optional until server online */ }
+  }
+
+  function importDate(value) {
+    if (!value) return "";
+    var n = Number(value);
+    var date = new Date(n && n < 1e12 ? n * 1000 : value);
+    if (isNaN(date.getTime())) return "";
+    return date.toLocaleDateString("zh-CN");
+  }
+
+  function renderImportSessions(sessions) {
+    if (!els.importSessionList) return;
+    if (!sessions.length) {
+      els.importSessionList.innerHTML = '<div class="import-empty">没有可导入的对话</div>';
+      return;
+    }
+    els.importSessionList.innerHTML = sessions.map(function (session) {
+      return '<div class="import-session-item">' +
+        '<div class="import-session-copy"><strong></strong><small></small></div>' +
+        '<div class="import-session-actions">' +
+        '<button class="btn btn-ghost btn-small" type="button" data-import-mode="chat">导入为对话</button>' +
+        '<button class="btn btn-ghost btn-small" type="button" data-import-mode="agent">导入为 Agent</button>' +
+        "</div></div>";
+    }).join("");
+    var rows = els.importSessionList.querySelectorAll(".import-session-item");
+    sessions.forEach(function (session, i) {
+      var row = rows[i];
+      if (!row) return;
+      row.dataset.sessionId = session.id;
+      row.querySelector("strong").textContent = session.title || "未命名对话";
+      row.querySelector("small").textContent = importDate(session.updatedAt) || "未知日期";
+    });
+  }
+
+  async function fetchImportSessions() {
+    if (!els.importFetchSessions) return;
+    els.importFetchSessions.disabled = true;
+    if (els.importFetchNote) els.importFetchNote.textContent = "读取中…";
+    try {
+      var res = await fetch("/api/deepseek-web/sessions", { cache: "no-store" });
+      if (res.status === 401) { showLoginScreen(); return; }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || "获取失败");
+      state.importSessions = data.sessions || [];
+      renderImportSessions(state.importSessions);
+      if (els.importFetchNote) els.importFetchNote.textContent = state.importSessions.length + " 条对话";
+    } catch (e) {
+      if (els.importFetchNote) els.importFetchNote.textContent = "读取失败";
+      toast(friendlyError(e), "error", 6000);
+    } finally {
+      els.importFetchSessions.disabled = false;
+    }
+  }
+
+  async function saveImportToken() {
+    var token = els.deepseekTokenInput ? els.deepseekTokenInput.value.trim() : "";
+    if (!token) { toast("请先粘贴 userToken", "error"); return; }
+    els.importTokenSave.disabled = true;
+    try {
+      var res = await fetch("/api/deepseek-web/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token })
+      });
+      if (res.status === 401) { showLoginScreen(); return; }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || "保存失败");
+      if (els.deepseekTokenInput) els.deepseekTokenInput.value = "";
+      await loadImportStatus();
+      toast("userToken 已保存", "success");
+    } catch (e) {
+      toast(friendlyError(e), "error", 6000);
+    } finally {
+      els.importTokenSave.disabled = false;
+    }
+  }
+
+  async function clearImportToken() {
+    try {
+      await fetch("/api/deepseek-web/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      if (els.importSessionList) els.importSessionList.innerHTML = "";
+      if (els.importFetchNote) els.importFetchNote.textContent = "最近 100 条";
+      await loadImportStatus();
+      toast("已清除 userToken");
+    } catch (e) {
+      toast(friendlyError(e), "error");
+    }
+  }
+
+  function importedMessages(raw) {
+    return (raw || []).map(function (item, i) {
+      return {
+        id: uid("msg"),
+        role: item.role === "assistant" ? "assistant" : "user",
+        content: String(item.content || ""),
+        reasoning: String(item.reasoning || ""),
+        createdAt: Number(item.createdAt) || (now() + i),
+        endedAt: Number(item.createdAt) || (now() + i),
+        streaming: false,
+        stopped: false,
+        error: "",
+        demo: false,
+        mode: "chat",
+        modelLabel: "DeepSeek 网页导入",
+        feedback: "",
+        sources: [],
+        attachments: [],
+        usage: null,
+        agent: null
+      };
+    });
+  }
+
+  function createImportedConversation(title, messages, mode) {
+    var conv = makeConversation(mode);
+    conv.title = title || "DeepSeek 导入";
+    conv.messages = messages;
+    conv.hasAgent = mode === "agent";
+    conv.updatedAt = now();
+    state.conversations.unshift(conv);
+    state.activeId = conv.id;
+    state.settings.mode = mode;
+    state.attachments = [];
+    closeSidebar();
+    syncComposerFromActive();
+    updateModeUI();
+    renderWorkspaceInfo();
+    renderSidebar();
+    renderChat({ forceBottom: true });
+    scheduleSave();
+    return conv;
+  }
+
+  async function importDeepseekSession(session, mode) {
+    if (state.streaming) { toast("请先停止当前生成", "error"); return; }
+    try {
+      var res = await fetch("/api/deepseek-web/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id })
+      });
+      if (res.status === 401) { showLoginScreen(); return; }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || "导入失败");
+      var messages = importedMessages(data.messages);
+      if (!messages.length) throw new Error("该对话没有可导入的消息");
+      closeDialog(els.settingsDialog);
+      if (mode === "agent") {
+        state.pendingImport = { title: session.title || "DeepSeek 导入", messages: messages };
+        await openWorkspaceDialog();
+      } else {
+        createImportedConversation(session.title || "DeepSeek 导入", messages, "chat");
+        toast("已导入为普通对话", "success");
+      }
+    } catch (e) {
+      toast(friendlyError(e), "error", 6000);
     }
   }
 
@@ -3374,6 +3570,7 @@
     refreshServerStatus({ quiet: true });
     loadLanInfo();
     loadWorkspaceInfo();
+    loadImportStatus();
     if (!els.settingsDialog.open) {
       els.settingsDialog.showModal();
       document.body.classList.add("dialog-open");
@@ -3629,6 +3826,16 @@
     });
     els.workspaceDialog.addEventListener("click", function (e) {
       if (e.target === els.workspaceDialog) closeWorkspaceDialog();
+    });
+    els.importTokenSave.addEventListener("click", saveImportToken);
+    els.importTokenClear.addEventListener("click", clearImportToken);
+    els.importFetchSessions.addEventListener("click", fetchImportSessions);
+    els.importSessionList.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-import-mode]");
+      if (!btn) return;
+      var row = btn.closest(".import-session-item");
+      var session = state.importSessions.find(function (s) { return s.id === row.dataset.sessionId; });
+      if (session) importDeepseekSession(session, btn.dataset.importMode === "agent" ? "agent" : "chat");
     });
     els.artifactDownloadBtn.addEventListener("click", function () { downloadArtifact(state.previewArtifact); });
     els.artifactRevealBtn.addEventListener("click", function () { revealArtifact(state.previewArtifact); });
@@ -4049,6 +4256,14 @@
     els.fullAccessEnable = $("#fullAccessEnable");
     els.fullAccessCancel = $("#fullAccessCancel");
     els.fullAccessWorkspacePath = $("#fullAccessWorkspacePath");
+    els.deepseekImportSection = $("#deepseekImportSection");
+    els.importTokenStatus = $("#importTokenStatus");
+    els.deepseekTokenInput = $("#deepseekTokenInput");
+    els.importTokenSave = $("#importTokenSave");
+    els.importTokenClear = $("#importTokenClear");
+    els.importFetchSessions = $("#importFetchSessions");
+    els.importFetchNote = $("#importFetchNote");
+    els.importSessionList = $("#importSessionList");
     els.wpRotate = $("#wpRotate");
     els.wpInterval = $("#wpInterval");
     els.wpOpacity = $("#wpOpacity");
