@@ -8,7 +8,9 @@
 
 ![首页](screenshots/home-light.png)
 
-![壁纸与玻璃面板](screenshots/wallpaper-light.png)
+![对话](screenshots/chat-light.png)
+
+![Agent 执行轨迹](screenshots/agent-light.png)
 
 ## 功能
 
@@ -163,8 +165,6 @@ EXE 模式下写入：
 - 不上传服务器。清除浏览器站点数据会同时删除壁纸。
 
 ## Agent 是怎么执行的
-
-![Agent 写入确认](screenshots/agent-approval.png)
 
 ```text
 用户任务
