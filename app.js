@@ -69,7 +69,13 @@
     attachments: [],
     searchQuery: "",
     saveTimer: null,
-    thinkTimer: null
+    thinkTimer: null,
+    auth: { required: false, authenticated: true },
+    lan: { lan: false, url: "", addresses: [], authRequired: false },
+    workspace: { path: "", defaultPath: "" },
+    workspaceBrowsePath: "",
+    fullAccess: { active: false, expiresAt: 0 },
+    fullAccessTimer: null
   };
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -134,7 +140,8 @@
     if (!bytes) return "";
     if (bytes < 1024) return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / 1024 / 1024).toFixed(1) + " MB";
+    if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
+    return (bytes / 1024 / 1024 / 1024).toFixed(1) + " GB";
   }
 
   function dayStart(ts) {
@@ -304,7 +311,12 @@
                 url: url,
                 demoContent: typeof a.demoContent === "string" ? a.demoContent.slice(0, 600000) : ""
               };
-            }) : [],
+            }).reduce(function (acc, item) {
+              var existing = acc.findIndex(function (a) { return (a.path && a.path === item.path) || a.name === item.name; });
+              if (existing >= 0) acc[existing] = item;
+              else acc.push(item);
+              return acc;
+            }, []) : [],
             runId: typeof m.agent.runId === "string" ? m.agent.runId : ""
           };
           if (msg.agent.status === "running") {
@@ -365,11 +377,10 @@
       active = state.conversations.find(function (c) { return !c.messages.length; }) || state.conversations[0];
       state.activeId = active.id;
     }
-    if (!active.messages.length) {
-      state.settings.mode = active.mode || state.settings.mode;
-    } else {
-      state.settings.mode = active.mode === "agent" ? "agent" : "chat";
-    }
+    // Safety: reloading a page must never resume in Agent mode. The user can
+    // deliberately switch again, but a fresh look at the app starts in chat.
+    state.settings.mode = "chat";
+    if (!active.messages.length) active.mode = "chat";
   }
 
   function scheduleSave() {
@@ -696,6 +707,83 @@
     updateWallpaperIndicator();
   }
 
+  function normalizeWallpaper(file) {
+    if (/^image\/gif$/i.test(file.type || "")) return Promise.resolve(file);
+    return new Promise(function (resolve) {
+      var objectUrl = URL.createObjectURL(file);
+      var img = new Image();
+      var done = false;
+      function finish(value) {
+        if (done) return;
+        done = true;
+        URL.revokeObjectURL(objectUrl);
+        resolve(value || file);
+      }
+      img.onload = function () {
+        try {
+          var maxW = 2560;
+          var maxH = 1600;
+          var scale = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+          var needsResize = scale < 1 || file.size > 2.5 * 1024 * 1024;
+          if (!needsResize) {
+            finish(file);
+            return;
+          }
+          var canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+          var ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(function (blob) {
+            if (blob && blob.size < file.size) finish(blob);
+            else {
+              canvas.toBlob(function (jpg) { finish(jpg && jpg.size < file.size ? jpg : file); }, "image/jpeg", 0.85);
+            }
+          }, "image/webp", 0.82);
+        } catch (e) {
+          finish(file);
+        }
+      };
+      img.onerror = function () { finish(file); };
+      img.src = objectUrl;
+    });
+  }
+
+  async function hasWallpaperStorageRoom(bytes) {
+    if (!navigator.storage || !navigator.storage.estimate) return true;
+    try {
+      var estimate = await navigator.storage.estimate();
+      var quota = Number(estimate.quota) || 0;
+      var usage = Number(estimate.usage) || 0;
+      if (!quota) return true;
+      if (usage + bytes > quota * 0.9) {
+        toast("浏览器本地存储接近上限，请删除一些壁纸或清理站点数据", "error", 5000);
+        return false;
+      }
+    } catch (e) {
+      /* estimate is advisory */
+    }
+    return true;
+  }
+
+  async function updateWallpaperStorageInfo() {
+    if (!els.wallpaperStorage) return;
+    if (!navigator.storage || !navigator.storage.estimate) {
+      els.wallpaperStorage.textContent = "浏览器未提供存储配额信息";
+      return;
+    }
+    try {
+      var estimate = await navigator.storage.estimate();
+      var usage = Number(estimate.usage) || 0;
+      var quota = Number(estimate.quota) || 0;
+      els.wallpaperStorage.textContent = "已用 " + fmtSize(usage) + (quota ? " / 可用配额 " + fmtSize(quota) : "");
+      els.wallpaperStorage.classList.toggle("is-warn", quota > 0 && usage / quota > 0.75 && usage / quota <= 0.9);
+      els.wallpaperStorage.classList.toggle("is-error", quota > 0 && usage / quota > 0.9);
+    } catch (e) {
+      els.wallpaperStorage.textContent = "存储配额读取失败";
+    }
+  }
+
   async function addWallpapers(fileList) {
     var files = Array.prototype.slice.call(fileList || []);
     if (!files.length) return;
@@ -711,20 +799,22 @@
         continue;
       }
       var id = uid("wallpaper");
+      var stored = await normalizeWallpaper(file);
+      if (!(await hasWallpaperStorageRoom(stored.size))) continue;
       try {
-        await idbPut(id, file);
+        await idbPut(id, stored);
       } catch (e) {
         toast("保存壁纸失败：" + (e.message || "本地空间不足"), "error", 5000);
         continue;
       }
-      var thumb = await createWallpaperThumbnail(file);
+      var thumb = await createWallpaperThumbnail(stored);
       if (thumb) {
         try { await idbPut(wallpaperThumbKey(id), thumb); } catch (e) { /* thumbnail is optional */ }
       }
-      var meta = { id: id, name: file.name || "壁纸", size: file.size, addedAt: now() };
+      var meta = { id: id, name: file.name || "壁纸", size: stored.size, addedAt: now() };
       state.settings.wallpapers.push(meta);
       state.wallpapers.push(meta);
-      state.wallpaperUrls.set(id, URL.createObjectURL(file));
+      state.wallpaperUrls.set(id, URL.createObjectURL(stored));
       added.push(meta);
     }
     els.wallpaperInput.value = "";
@@ -738,6 +828,7 @@
     applyWallpaper();
     startWallpaperRotation();
     scheduleSave();
+    updateWallpaperStorageInfo();
     toast("已添加 " + added.length + " 张壁纸", "success");
   }
 
@@ -766,6 +857,7 @@
     applyWallpaper();
     startWallpaperRotation();
     scheduleSave();
+    updateWallpaperStorageInfo();
     toast("已删除壁纸");
   }
 
@@ -826,6 +918,7 @@
     applyWallpaper();
     startWallpaperRotation();
     scheduleSave();
+    updateWallpaperStorageInfo();
   }
 
   /* ============================================================
@@ -852,6 +945,322 @@
     $$(".theme-option").forEach(function (btn) {
       btn.classList.toggle("is-active", btn.dataset.themeChoice === state.settings.theme);
     });
+  }
+
+  /* ============================================================
+     LAN authentication
+     ============================================================ */
+  function showLoginScreen() {
+    if (!els.loginScreen) return;
+    els.loginScreen.hidden = false;
+    document.body.classList.add("login-open");
+    setTimeout(function () {
+      if (els.loginPassword) els.loginPassword.focus();
+    }, 80);
+  }
+
+  function hideLoginScreen() {
+    if (!els.loginScreen) return;
+    els.loginScreen.hidden = true;
+    document.body.classList.remove("login-open");
+  }
+
+  async function initAuth() {
+    try {
+      var res = await fetchTimeout("/api/auth/status", { cache: "no-store" }, 3000);
+      if (res.ok) {
+        var data = await res.json();
+        state.auth = data || state.auth;
+        if (data.required && !data.authenticated) {
+          showLoginScreen();
+          loadLanInfo();
+          return;
+        }
+      }
+    } catch (e) {
+      /* if the auth probe fails, fall through to the normal offline UI */
+    }
+    hideLoginScreen();
+    await refreshServerStatus();
+    loadLanInfo();
+    loadWorkspaceInfo();
+  }
+
+  async function submitLogin() {
+    var password = els.loginPassword.value;
+    if (!password) {
+      els.loginError.textContent = "请输入访问口令";
+      return;
+    }
+    els.loginSubmit.disabled = true;
+    els.loginError.textContent = "";
+    try {
+      var res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: password })
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || !data.ok) throw new Error(data.error || "登录失败");
+      state.auth.required = true;
+      state.auth.authenticated = true;
+      hideLoginScreen();
+      els.loginPassword.value = "";
+      await refreshServerStatus();
+      await loadLanInfo();
+      await loadWorkspaceInfo();
+      toast("已解锁局域网访问", "success");
+    } catch (e) {
+      els.loginError.textContent = friendlyError(e);
+      els.loginPassword.select();
+    } finally {
+      els.loginSubmit.disabled = false;
+    }
+  }
+
+  async function logoutLan() {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+    } catch (e) { /* clear locally regardless */ }
+    state.auth.authenticated = false;
+    showLoginScreen();
+    toast("已退出局域网访问");
+  }
+
+  async function loadLanInfo() {
+    try {
+      var res = await fetch("/api/lan-info", { cache: "no-store" });
+      if (!res.ok) return;
+      state.lan = await res.json();
+      renderLanInfo();
+    } catch (e) { /* LAN info is optional */ }
+  }
+
+  function renderLanInfo() {
+    if (!els.lanStatusPill) return;
+    var data = state.lan || {};
+    var enabled = !!data.lan && !!data.url;
+    els.lanStatusPill.className = "status-pill " + (enabled ? "is-ok" : "");
+    els.lanStatusPill.innerHTML = "<span></span>" + (enabled ? "局域网" : "本机模式");
+    if (els.lanCard) els.lanCard.classList.toggle("no-qr", !enabled);
+    if (els.lanQr) {
+      if (enabled) els.lanQr.src = "/api/lan-qr.svg?t=" + Date.now();
+      else els.lanQr.removeAttribute("src");
+    }
+    if (els.lanUrl) els.lanUrl.textContent = enabled ? data.url : "仅本机访问";
+    if (els.lanHint) {
+      if (!enabled) {
+        els.lanHint.innerHTML = "运行 <code>start-lan.cmd</code> 后，这里会显示局域网地址和二维码。";
+      } else if (data.authRequired) {
+        els.lanHint.textContent = "手机打开后，输入电脑控制台显示的访问口令。";
+      } else {
+        els.lanHint.textContent = "当前未启用访问口令，只建议在可信网络使用。";
+      }
+    }
+    if (els.logoutBtn) els.logoutBtn.hidden = !state.auth.required;
+  }
+
+  var FULL_ACCESS_MS = 60 * 60 * 1000;
+
+  function isFullAccessActive() {
+    return !!(state.fullAccess && state.fullAccess.active && Date.now() < state.fullAccess.expiresAt);
+  }
+
+  function updateFullAccessUI() {
+    var active = isFullAccessActive();
+    if (state.fullAccess && state.fullAccess.active && !active) state.fullAccess.active = false;
+    if (els.fullAccessPill) {
+      els.fullAccessPill.className = "status-pill " + (active ? "is-error" : "");
+      els.fullAccessPill.innerHTML = "<span></span>" + (active ? "完全权限" : "逐次确认");
+    }
+    if (els.fullAccessHint) {
+      els.fullAccessHint.textContent = active
+        ? "完全权限已开启：Agent 写文件时不再逐次确认，仍保留 .bak 备份。"
+        : "Agent 写文件前会展示 diff，需要你点击允许。";
+    }
+    if (els.permissionSection) els.permissionSection.classList.toggle("is-on", active);
+    if (els.fullAccessSettingsBtn) {
+      els.fullAccessSettingsBtn.innerHTML = active
+        ? icon("shield") + "关闭完全权限"
+        : icon("shield") + "开启完全权限";
+    }
+    if (els.agentAccessBtn) {
+      els.agentAccessBtn.classList.toggle("is-on", active);
+      if (els.agentAccessText) els.agentAccessText.textContent = active ? "完全权限" : "逐次确认";
+    }
+  }
+
+  function openFullAccessDialog() {
+    if (isFullAccessActive()) {
+      disableFullAccess();
+      return;
+    }
+    if (state.streaming) {
+      toast("请先停止当前任务，再修改权限", "error");
+      return;
+    }
+    if (!els.fullAccessDialog.open) {
+      els.fullAccessDialog.showModal();
+      document.body.classList.add("dialog-open");
+    }
+    els.fullAccessAck.checked = false;
+    els.fullAccessEnable.disabled = true;
+    els.fullAccessWorkspacePath.textContent = state.workspace.path || "当前工作区";
+  }
+
+  function enableFullAccess() {
+    if (!els.fullAccessAck.checked) return;
+    state.fullAccess.active = true;
+    state.fullAccess.expiresAt = Date.now() + FULL_ACCESS_MS;
+    closeDialog(els.fullAccessDialog);
+    updateFullAccessUI();
+    if (state.fullAccessTimer) clearTimeout(state.fullAccessTimer);
+    state.fullAccessTimer = setTimeout(function () {
+      state.fullAccess.active = false;
+      state.fullAccess.expiresAt = 0;
+      updateFullAccessUI();
+      toast("完全权限已到期，恢复逐次确认", "error", 5000);
+    }, FULL_ACCESS_MS);
+    toast("完全权限已开启，60 分钟后自动失效", "error", 4500);
+  }
+
+  function disableFullAccess(silent) {
+    state.fullAccess.active = false;
+    state.fullAccess.expiresAt = 0;
+    if (state.fullAccessTimer) {
+      clearTimeout(state.fullAccessTimer);
+      state.fullAccessTimer = null;
+    }
+    updateFullAccessUI();
+    if (!silent) toast("已关闭完全权限，恢复逐次确认");
+  }
+
+  async function loadWorkspaceInfo() {
+    try {
+      var res = await fetch("/api/workspace", { cache: "no-store" });
+      if (res.status === 401) {
+        showLoginScreen();
+        return;
+      }
+      if (!res.ok) return;
+      var data = await res.json();
+      state.workspace = data || state.workspace;
+      if (els.workspacePath) {
+        els.workspacePath.textContent = data.path || "未设置";
+        els.workspacePath.title = data.path || "";
+      }
+      if (els.fullAccessWorkspacePath) els.fullAccessWorkspacePath.textContent = data.path || "当前工作区";
+      if (els.workspaceStatusPill) {
+        els.workspaceStatusPill.className = "status-pill " + (data.exists ? "is-ok" : "is-warn");
+        els.workspaceStatusPill.innerHTML = "<span></span>" + (data.exists ? "可写" : "目录不存在");
+      }
+      if (els.workspaceHint) {
+        els.workspaceHint.textContent = "Agent 只能访问此目录下的相对路径；写文件仍会先展示 diff 并等待你确认。";
+      }
+    } catch (e) { /* settings are optional until logged in */ }
+  }
+
+  function closeWorkspaceDialog() {
+    if (els.workspaceDialog && els.workspaceDialog.open) closeDialog(els.workspaceDialog);
+  }
+
+  async function openWorkspaceDialog() {
+    if (state.streaming) {
+      toast("请先停止当前 Agent 任务", "error");
+      return;
+    }
+    els.workspaceError.textContent = "";
+    if (!els.workspaceDialog.open) {
+      els.workspaceDialog.showModal();
+      document.body.classList.add("dialog-open");
+    }
+    await browseWorkspace(state.workspace.path || "");
+  }
+
+  async function browseWorkspace(targetPath) {
+    els.workspaceError.textContent = "";
+    els.workspaceSelect.disabled = true;
+    els.workspaceList.innerHTML = '<div class="workspace-empty">读取中…</div>';
+    try {
+      var res = await fetch("/api/workspace/browse?path=" + encodeURIComponent(targetPath || ""), { cache: "no-store" });
+      if (res.status === 401) {
+        showLoginScreen();
+        closeWorkspaceDialog();
+        return;
+      }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || "无法浏览目录");
+      state.workspaceBrowsePath = data.path || "";
+      state.workspaceBrowseParent = data.parent || "";
+      els.workspaceBrowsePath.textContent = data.path || "此电脑";
+      els.workspaceBrowsePath.title = data.path || "";
+      els.workspaceUp.disabled = !data.path;
+      els.workspaceSelect.disabled = !data.path;
+      els.workspaceList.innerHTML = "";
+      (data.entries || []).forEach(function (entry) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "workspace-entry";
+        btn.dataset.path = entry.path;
+        btn.innerHTML = icon("folder") + "<span></span>";
+        btn.querySelector("span").textContent = entry.name;
+        btn.addEventListener("click", function () { browseWorkspace(entry.path); });
+        els.workspaceList.appendChild(btn);
+      });
+      if (!(data.entries || []).length) {
+        els.workspaceList.innerHTML = '<div class="workspace-empty">这个文件夹下没有子目录</div>';
+      }
+    } catch (e) {
+      els.workspaceError.textContent = friendlyError(e);
+      els.workspaceList.innerHTML = '<div class="workspace-empty">无法读取</div>';
+    }
+  }
+
+  async function selectCurrentWorkspace() {
+    if (!state.workspaceBrowsePath) return;
+    els.workspaceSelect.disabled = true;
+    try {
+      var res = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: state.workspaceBrowsePath })
+      });
+      if (res.status === 401) {
+        showLoginScreen();
+        return;
+      }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || "切换失败");
+      disableFullAccess(true);
+      closeWorkspaceDialog();
+      await loadWorkspaceInfo();
+      toast("Agent 工作区已切换", "success");
+    } catch (e) {
+      els.workspaceError.textContent = friendlyError(e);
+      els.workspaceSelect.disabled = false;
+    }
+  }
+
+  async function resetWorkspace() {
+    if (!window.confirm("恢复默认 Agent 工作区？")) return;
+    try {
+      var res = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "" })
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || "恢复失败");
+      disableFullAccess(true);
+      await loadWorkspaceInfo();
+      toast("已恢复默认工作区", "success");
+    } catch (e) {
+      toast(friendlyError(e), "error");
+    }
   }
 
   /* ============================================================
@@ -884,6 +1293,14 @@
     if (!opts.quiet) updateConnectionUI();
     try {
       var res = await fetchTimeout("/api/status", { cache: "no-store" }, 3000);
+      if (res.status === 401) {
+        state.server.online = true;
+        state.server.checking = false;
+        state.server.key = { configured: false, hint: "", source: "需要访问口令" };
+        showLoginScreen();
+        updateConnectionUI();
+        return;
+      }
       if (!res.ok) throw new Error("HTTP " + res.status);
       var data = await res.json();
       state.server.online = true;
@@ -1076,7 +1493,7 @@
     var conv = state.conversations.find(function (c) { return c.id === id; });
     if (!conv) return;
     state.activeId = id;
-    state.settings.mode = conv.mode === "agent" ? "agent" : "chat";
+    state.settings.mode = "chat";
     state.attachments = [];
     closeSidebar();
     syncComposerFromActive();
@@ -1092,17 +1509,18 @@
       toast("请先停止当前生成，再新建对话", "error");
       return;
     }
+    mode = mode === "agent" ? "agent" : "chat";
     var empty = state.conversations.find(function (c) { return !c.messages.length; });
     if (empty) {
-      empty.mode = mode || state.settings.mode;
+      empty.mode = mode;
       empty.updatedAt = now();
       state.activeId = empty.id;
     } else {
-      var conv = makeConversation(mode || state.settings.mode);
+      var conv = makeConversation(mode);
       state.conversations.unshift(conv);
       state.activeId = conv.id;
     }
-    state.settings.mode = mode || state.settings.mode;
+    state.settings.mode = mode;
     state.attachments = [];
     closeSidebar();
     syncComposerFromActive();
@@ -1318,6 +1736,7 @@
       '<span class="trace-step-icon">' + icon(statusIcon, iconClass) + "</span>" +
       '<div class="trace-step-copy"><div class="trace-step-title">' + escapeHtml(label) +
       (step.tool ? '<span class="trace-tool-name">' + escapeHtml(step.tool) + "</span>" : "") +
+      (step.autoApproved ? '<span class="trace-auto">完全权限</span>' : "") +
       "</div>" +
       (detail ? '<div class="trace-step-detail">' + escapeHtml(detail) + "</div>" : "");
     if (step.summary) {
@@ -1855,6 +2274,8 @@
       if (msg.reasoning && !msg.thinkMs) msg.thinkMs = msg.endedAt - msg.createdAt;
       stopThinkTimer();
       state.streaming = null;
+      // Stay in Agent mode for follow-up work in the same session. New chats
+      // and page reloads still default to chat (see loadState/newChat).
       setStreamingUI(false);
       updateSendState();
       scheduleSave();
@@ -2002,10 +2423,13 @@
   async function runRealAgent(conv, msg, signal) {
     var runId = uid("run");
     msg.agent.runId = runId;
+    var fullAccess = isFullAccessActive();
     var body = {
       runId: runId,
       messages: buildModelMessages(conv, msg.id),
-      model: "deepseek-chat"
+      model: "deepseek-chat",
+      fullAccess: fullAccess,
+      fullAccessAck: fullAccess
     };
     var res = await fetch("/api/agent", {
       method: "POST",
@@ -2068,12 +2492,23 @@
         detail: ev.detail || "", status: "running", startedAt: now()
       });
       renderChat({ forceBottom: isNearBottom() });
+    } else if (ev.type === "full_access_write") {
+      var accessStep = upsertAgentStep(agent, {
+        id: ev.id,
+        kind: "write",
+        title: "写入文件 · 完全权限",
+        detail: ev.path || "",
+        status: "running",
+        autoApproved: true
+      });
+      renderChat({ forceBottom: isNearBottom() });
     } else if (ev.type === "tool_end") {
       var step = upsertAgentStep(agent, {
         id: ev.id, status: ev.status || "done", summary: ev.summary || ""
       });
+      if (ev.autoApproved) step.autoApproved = true;
       if (step.kind === "write") {
-        step.title = ev.status === "error" ? "写入文件 · 未执行" : "写入文件";
+        step.title = ev.status === "error" ? "写入文件 · 未执行" : (ev.autoApproved ? "写入文件 · 完全权限" : "写入文件");
         if (ev.summary) step.detail = ev.summary;
       }
       if (ev.sources && ev.sources.length) {
@@ -2082,7 +2517,13 @@
       }
       if (ev.artifact) {
         step.artifact = ev.artifact;
-        agent.artifacts = (agent.artifacts || []).concat([ev.artifact]);
+        agent.artifacts = agent.artifacts || [];
+        var existing = agent.artifacts.findIndex(function (a) {
+          return (a.path && ev.artifact.path && a.path === ev.artifact.path) ||
+            (a.name && ev.artifact.name && a.name === ev.artifact.name);
+        });
+        if (existing >= 0) agent.artifacts[existing] = ev.artifact;
+        else agent.artifacts.push(ev.artifact);
       }
       if (ev.diff) step.diff = ev.diff;
       renderChat({ forceBottom: isNearBottom() });
@@ -2792,6 +3233,8 @@
   function openSettings(section) {
     closeContextMenu();
     refreshServerStatus({ quiet: true });
+    loadLanInfo();
+    loadWorkspaceInfo();
     if (!els.settingsDialog.open) {
       els.settingsDialog.showModal();
       document.body.classList.add("dialog-open");
@@ -2799,6 +3242,7 @@
     setTimeout(function () {
       renderWallpaperSlots();
       syncWallpaperControls();
+      updateWallpaperStorageInfo();
       if (section === "wallpaper" && els.wallpaperSection) {
         els.wallpaperSection.scrollIntoView({ block: "start", behavior: "smooth" });
         return;
@@ -2977,7 +3421,7 @@
      ============================================================ */
   function bindEvents() {
     /* Sidebar */
-    els.newChatBtn.addEventListener("click", function () { newChat(state.settings.mode); });
+    els.newChatBtn.addEventListener("click", function () { newChat("chat"); });
     els.collapseBtn.addEventListener("click", function () {
       state.settings.sidebarCollapsed = !document.getElementById("appShell").classList.contains("is-collapsed");
       syncSidebarCollapse();
@@ -3025,6 +3469,41 @@
     els.brandHome.addEventListener("click", function (e) {
       e.preventDefault();
       newChat("chat");
+    });
+
+    /* LAN login */
+    els.loginForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      submitLogin();
+    });
+    els.copyLanUrl.addEventListener("click", function () {
+      if (!state.lan || !state.lan.url) return;
+      copyText(state.lan.url).then(function () {
+        toast("已复制手机访问地址", "success");
+      }).catch(function () { toast("复制失败", "error"); });
+    });
+    els.logoutBtn.addEventListener("click", logoutLan);
+    els.chooseWorkspace.addEventListener("click", openWorkspaceDialog);
+    els.resetWorkspace.addEventListener("click", resetWorkspace);
+    els.workspaceCancel.addEventListener("click", closeWorkspaceDialog);
+    els.workspaceSelect.addEventListener("click", selectCurrentWorkspace);
+    els.workspaceUp.addEventListener("click", function () {
+      if (!state.workspaceBrowsePath) return;
+      if (state.workspaceBrowseParent) browseWorkspace(state.workspaceBrowseParent);
+      else browseWorkspace("");
+    });
+    els.workspaceDialog.addEventListener("click", function (e) {
+      if (e.target === els.workspaceDialog) closeWorkspaceDialog();
+    });
+    els.fullAccessSettingsBtn.addEventListener("click", openFullAccessDialog);
+    els.agentAccessBtn.addEventListener("click", openFullAccessDialog);
+    els.fullAccessAck.addEventListener("change", function () {
+      els.fullAccessEnable.disabled = !els.fullAccessAck.checked;
+    });
+    els.fullAccessEnable.addEventListener("click", enableFullAccess);
+    els.fullAccessCancel.addEventListener("click", function () { closeDialog(els.fullAccessDialog); });
+    els.fullAccessDialog.addEventListener("click", function (e) {
+      if (e.target === els.fullAccessDialog) closeDialog(els.fullAccessDialog);
     });
 
     /* Topbar */
@@ -3370,7 +3849,46 @@
     els.wallpaperSection = $("#wallpaperSection");
     els.wallpaperEnabled = $("#wallpaperEnabled");
     els.wallpaperCount = $("#wallpaperCount");
+    els.wallpaperStorage = $("#wallpaperStorage");
     els.wallpaperDisable = $("#wallpaperDisable");
+    els.loginScreen = $("#loginScreen");
+    els.loginForm = $("#loginForm");
+    els.loginPassword = $("#loginPassword");
+    els.loginSubmit = $("#loginSubmit");
+    els.loginError = $("#loginError");
+    els.lanSection = $("#lanSection");
+    els.lanStatusPill = $("#lanStatusPill");
+    els.lanCard = $("#lanCard");
+    els.lanQrWrap = $("#lanQrWrap");
+    els.lanQr = $("#lanQr");
+    els.lanUrl = $("#lanUrl");
+    els.lanHint = $("#lanHint");
+    els.copyLanUrl = $("#copyLanUrl");
+    els.logoutBtn = $("#logoutBtn");
+    els.workspaceSection = $("#workspaceSection");
+    els.workspacePath = $("#workspacePath");
+    els.workspaceHint = $("#workspaceHint");
+    els.workspaceStatusPill = $("#workspaceStatusPill");
+    els.chooseWorkspace = $("#chooseWorkspace");
+    els.resetWorkspace = $("#resetWorkspace");
+    els.workspaceDialog = $("#workspaceDialog");
+    els.workspaceUp = $("#workspaceUp");
+    els.workspaceBrowsePath = $("#workspaceBrowsePath");
+    els.workspaceList = $("#workspaceList");
+    els.workspaceError = $("#workspaceError");
+    els.workspaceSelect = $("#workspaceSelect");
+    els.workspaceCancel = $("#workspaceCancel");
+    els.permissionSection = $("#permissionSection");
+    els.fullAccessPill = $("#fullAccessPill");
+    els.fullAccessHint = $("#fullAccessHint");
+    els.fullAccessSettingsBtn = $("#fullAccessSettingsBtn");
+    els.agentAccessBtn = $("#agentAccessBtn");
+    els.agentAccessText = $("#agentAccessText");
+    els.fullAccessDialog = $("#fullAccessDialog");
+    els.fullAccessAck = $("#fullAccessAck");
+    els.fullAccessEnable = $("#fullAccessEnable");
+    els.fullAccessCancel = $("#fullAccessCancel");
+    els.fullAccessWorkspacePath = $("#fullAccessWorkspacePath");
     els.wpRotate = $("#wpRotate");
     els.wpInterval = $("#wpInterval");
     els.wpOpacity = $("#wpOpacity");
@@ -3441,6 +3959,7 @@
     syncSidebarCollapse();
     syncComposerFromActive();
     updateModeUI();
+    updateFullAccessUI();
     ensureWallpaperLayers();
     syncWallpaperControls();
     renderWallpaperSlots();
@@ -3448,7 +3967,7 @@
     renderSidebar();
     renderChat({ forceBottom: true });
     updateConnectionUI();
-    refreshServerStatus();
+    initAuth();
     setTimeout(function () { els.composerInput.focus(); }, 120);
   }
 

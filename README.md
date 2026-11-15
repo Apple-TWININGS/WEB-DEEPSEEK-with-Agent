@@ -16,7 +16,7 @@
 
 | 默认：对话 | 需要时：Agent |
 | --- | --- |
-| 流式回答、Markdown、代码高亮与复制 | 多轮工具循环，最多 6 轮 |
+| 流式回答、Markdown、代码高亮与复制 | 多轮工具循环，最多 15 轮 |
 | 深度思考（`deepseek-reasoner`） | 联网搜索、读取/列出/写入文件、任务计划 |
 | 联网搜索与引用来源 | 写文件前 diff 审批，可拒绝 |
 | 历史记录、搜索、导出、主题、移动端 | 自动 `.bak` / `.bak.1` 备份，原子写入 |
@@ -43,6 +43,29 @@ Agent 只在手动切换后启动，不会在普通聊天里擅自调用工具�
 6. 在页面右上角 **设置 → 模型服务** 填入 DeepSeek API Key，即可从演示模式切换到真实模型。
 
 运行时会出现一个命令行窗口，**关闭窗口或按 Ctrl+C 就会停止本地服务**。这是正常行为，不是安装器残留。
+
+## 手机 / 局域网访问
+
+默认只监听 `127.0.0.1`，手机打不开。双击：
+
+```text
+start-lan.cmd
+```
+
+它会：
+
+1. 把服务绑定到 `0.0.0.0:4173`；
+2. 自动生成一个 10 位访问口令（也可以用 `ACCESS_PASSWORD` 固定）；
+3. 在控制台打印手机地址、二维码和口令；
+4. 在电脑上打开 `http://127.0.0.1:4173`。
+
+手机和电脑连同一个 Wi-Fi，扫码打开地址，再输入控制台显示的口令即可。登录状态保持 7 天，重启服务后需要重新登录。
+
+安全提醒：
+
+- 这是局域网直连，没有云账号；只在可信 Wi-Fi 使用。
+- 不要直接把 4173 端口映射到公网；外网访问请用 Tailscale/ZeroTier 或带认证的反向代理。
+- `Origin: null`（file://、沙箱 iframe）和跨站 `Sec-Fetch-Site` 会直接拒绝；但同源校验不能替代访问口令。
 
 ### Windows SmartScreen
 
@@ -121,6 +144,11 @@ node server.mjs
 | `HOST` | `127.0.0.1` | 监听地址。改成 `0.0.0.0` 前请阅读安全说明 |
 | `DEEPSEEK_WEB_DATA` | 源码目录 / EXE 的 `%LOCALAPPDATA%` | 数据目录覆盖 |
 | `DEEPSEEK_WEB_OPEN_BROWSER` | EXE 为 `1` | 设为 `0` 可禁止自动打开浏览器 |
+| `ACCESS_PASSWORD` | 局域网自动生成 | 自定义访问口令；留空则局域网模式随机生成 |
+| `SEARCH_PROVIDER` | `auto` | `auto` / `searxng` / `serper` / `tavily` / `ddg` / `bing` |
+| `SEARXNG_URL` | 空 | 自建 SearXNG 地址，例如 `http://127.0.0.1:8080` |
+| `SERPER_API_KEY` | 空 | serper.dev 的 Google 搜索 API Key |
+| `TAVILY_API_KEY` | 空 | Tavily Search API Key |
 
 源码模式下，页面设置中的 Key 写入：
 
@@ -160,9 +188,34 @@ EXE 模式下写入：
 
 - 图片 Blob 存在浏览器 **IndexedDB**；
 - 文件列表和参数存在 `localStorage`；
-- 上传时生成小尺寸缩略图，设置里的缩略图按可视区域懒加载；
+- 上传时生成小尺寸缩略图，并压缩到最长边 2560px 的 WebP/JPEG（GIF 保留原文件）；
+- 设置里的缩略图按可视区域懒加载；
 - 启动时只加载当前壁纸原图，切换时按需加载，不会一次性把所有大图读进内存；
+- 设置里显示“已用 / 可用配额”，并在空间紧张时阻止继续添加；
 - 不上传服务器。清除浏览器站点数据会同时删除壁纸。
+
+## Agent 工作区与权限
+
+**工作区**决定 Agent 能读写哪个目录。入口：**设置 → Agent 工作区**。
+
+- 默认使用应用数据目录下的 `agent-workspace/`；
+- 点击“选择文件夹”可浏览服务器上的目录并切换；
+- 工作区可以是已有代码库或文档目录，但 Agent 只能使用相对此目录的路径；
+- 不允许选择应用数据目录或其上级目录，避免 Agent 读取 `secrets.json`；
+- 切换工作区会关闭完全权限，避免旧授权作用到新目录。
+
+**默认权限**：每次写文件前展示 unified diff，需要用户点击允许；修改已有文件自动保留 `.bak` / `.bak.1`。
+
+**完全权限模式**：在 **设置 → Agent 权限** 或 Agent 工具栏的“逐次确认”按钮中开启。开启前必须勾选：
+
+> 我已了解上述风险，并确认允许 Agent 在当前工作区自动写入文件。
+
+开启后：
+
+- 跳过逐次 diff 弹窗，直接写入当前工作区；
+- 仍保留 `.bak` 备份，仍有文件大小/编码/JSON 校验；
+- 60 分钟后自动失效；刷新页面、重启服务或切换工作区也会失效；
+- 只建议用于测试目录、临时目录或已有版本控制的项目。
 
 ## Agent 是怎么执行的
 
@@ -188,13 +241,17 @@ EXE 模式下写入：
 安全边界：
 
 - 文件工具只能访问 `agent-workspace/` 内的相对路径，拒绝 `..`、绝对路径和盘符；
-- 只允许文本类扩展名，单文件内容上限 500 KB；
+- 只允许文本类扩展名；单次写入上限 12 KB（约 150 行），单文件上限 24 MB；
+- 大文件支持 `read_file` 的 `offset/limit` 分块读取和 `write_file` 的 `append=true` 分块追加；
+- 写入后回读文件大小校验，不一致会报错，不会当作成功；
+- Agent 输出上限提升到 8192 tokens，轮次预算 15 轮；多文件任务要求先用 `task_plan` 维护清单；
 - `.json` 在写入前做语法检查；
 - 不提供 shell 工具，不允许读取工作区外文件；
 - 写文件不是模型直接完成的：服务端先发 diff，等待前端 `POST /api/agent/decision` 才执行；
 - 修改已有文件时保留两代备份；写入采用临时文件 + rename；
-- 工具轮次、单轮工具数量、重复调用都有上限；轮次用尽时会基于已有证据做收尾，而不是丢掉一切；
-- 页面和 API 只绑定 `127.0.0.1`；POST 请求校验同源和 `application/json`。
+- 工具轮次、单轮工具数量、重复调用都有上限；轮次用尽时会基于已有证据做收尾，并列出“未完成 / 需要确认”；
+- 默认只绑定 `127.0.0.1`；`start-lan.cmd` 才绑定局域网，并自动启用访问口令；
+- POST 请求校验同源、`Origin: null` 和 `Sec-Fetch-Site`。
 
 ## 项目结构
 
@@ -205,14 +262,16 @@ deepseek-web/
   markdown.js           无依赖 Markdown 渲染器（先转义，再格式化）
   markdown-worker.js    流式长文本的 Markdown Worker
   app.js                状态、渲染、聊天、Agent 事件、壁纸与审批流程
-  server.mjs            静态服务 + DeepSeek 代理 + Agent 工具循环
+  server.mjs            静态服务 + DeepSeek 代理 + Agent 工具循环 + LAN 登录
+  vendor/qrcode.cjs     二维码生成（qrcode-generator，MIT）
   packaging/
     sea-entry.cjs       EXE 启动入口（数据目录 + 内嵌资源）
   build-exe.cmd         双击构建 Windows EXE
   build-exe.ps1         实际构建脚本
-  agent-workspace/      Agent 唯一可写目录（产物可下载）
+  agent-workspace/      默认 Agent 工作区（可在设置中切换）
   deepseek-icon.png     鲸鱼标识
-  start.cmd             源码模式双击启动
+  start.cmd             本机模式双击启动
+  start-lan.cmd         局域网 + 访问口令 + 二维码启动
 ```
 
 前端是原生 HTML/CSS/JS，没有前端构建步骤；`server.mjs` 只使用 Node 内置模块。
@@ -277,6 +336,9 @@ Agent 的工程约束参考了本机的 **Professional Agent** 项目：
 ## 已知边界
 
 - **单用户、本地优先**。没有账号系统；不要在不可信网络上用 `HOST=0.0.0.0` 暴露它。
+- 浏览器 POST 会校验同源；`Origin: null`（file://、沙箱 iframe）和跨站 `Sec-Fetch-Site` 会被拒绝，但它们**不能替代**本地服务的访问控制。
+- 联网搜索默认 DDG/Bing；国内网络建议配置 SearXNG 或 Serper/Tavily，否则搜索可能不可用。
+- Agent 在当前会话内会保持 Agent 模式，方便连续任务；新建对话或刷新页面默认回到对话模式。
 - 演示模式不会发起真实搜索，也不会写磁盘。
 - 联网搜索使用 DuckDuckGo HTML，失败时回退 Bing RSS；搜索结果质量取决于上游服务。
 - Agent 只处理文本文件，不执行命令，不处理二进制/图片。

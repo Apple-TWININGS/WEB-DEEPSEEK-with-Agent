@@ -13,9 +13,11 @@ import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import qrcode from "./vendor/qrcode.cjs";
 
 let SOURCE_FILE = "";
 try {
@@ -28,11 +30,25 @@ const SEA_ASSETS = typeof globalThis.__DEEPSEEK_SEA_ASSETS__ === "function"
   ? globalThis.__DEEPSEEK_SEA_ASSETS__
   : null;
 const DATA_ROOT = globalThis.__DEEPSEEK_SEA_DATA_ROOT__ || process.env.DEEPSEEK_WEB_DATA || ROOT;
-const WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
+const DEFAULT_WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
-const VERSION = "1.1.0";
+const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
+let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
+const VERSION = "1.2.0";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
+const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_COOKIE = "ds_lan_session";
+const sessions = new Map();
+const loginAttempts = new Map();
+let ACCESS_PASSWORD = String(process.env.ACCESS_PASSWORD || "").trim();
+let GENERATED_PASSWORD = false;
+if (!ACCESS_PASSWORD && !IS_LOOPBACK) {
+  ACCESS_PASSWORD = generateAccessPassword();
+  GENERATED_PASSWORD = true;
+}
+const AUTH_REQUIRED = !!ACCESS_PASSWORD;
 const API_BASE = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
 const CHAT_ENDPOINT = API_BASE.endsWith("/chat/completions") ? API_BASE : API_BASE + "/chat/completions";
 const MODELS_ENDPOINT = API_BASE.replace(/\/chat\/completions$/, "") + "/models";
@@ -40,12 +56,20 @@ const MODEL_CHAT = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 const MODEL_REASONER = process.env.DEEPSEEK_REASONER_MODEL || "deepseek-reasoner";
 const MODEL_AGENT = process.env.DEEPSEEK_AGENT_MODEL || "deepseek-chat";
 const MAX_BODY = 2 * 1024 * 1024;
-const MAX_AGENT_ROUNDS = 6;
+const MAX_AGENT_ROUNDS = 15;
 const MAX_TOOL_CALLS_PER_ROUND = 4;
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_FILE_BYTES = 24 * 1024 * 1024;
+const MAX_WRITE_BYTES = 12 * 1024;
+const READ_DEFAULT_CHARS = 50000;
+const READ_MAX_CHARS = 200000;
 const SEARCH_TTL_MS = 5 * 60 * 1000;
 const SEARCH_CACHE_MAX = 60;
 const searchCache = new Map();
+const SEARCH_PROVIDER = String(process.env.SEARCH_PROVIDER || "auto").toLowerCase();
+const SEARXNG_URL = String(process.env.SEARXNG_URL || "").replace(/\/+$/, "");
+const SERPER_API_KEY = String(process.env.SERPER_API_KEY || "").trim();
+const TAVILY_API_KEY = String(process.env.TAVILY_API_KEY || "").trim();
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -79,6 +103,141 @@ function log(...args) {
   console.log(`[${time}]`, ...args);
 }
 
+function generateAccessPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = crypto.randomBytes(10);
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
+function parseCookies(req) {
+  const out = {};
+  const raw = String(req.headers.cookie || "");
+  for (const part of raw.split(";")) {
+    const index = part.indexOf("=");
+    if (index < 0) continue;
+    out[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+  }
+  return out;
+}
+
+function isAuthenticated(req) {
+  if (!AUTH_REQUIRED) return true;
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return false;
+  const expires = sessions.get(token);
+  if (!expires || expires < Date.now()) {
+    sessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function createSession(res) {
+  const token = crypto.randomBytes(32).toString("hex");
+  sessions.set(token, Date.now() + SESSION_TTL_MS);
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
+  );
+  return token;
+}
+
+function clearSession(req, res) {
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (token) sessions.delete(token);
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+}
+
+function passwordMatches(input) {
+  const a = Buffer.from(String(input || ""));
+  const b = Buffer.from(ACCESS_PASSWORD);
+  if (!a.length || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function clientAddress(req) {
+  return String(req.socket.remoteAddress || "local");
+}
+
+function loginBlocked(ip) {
+  const now = Date.now();
+  const item = loginAttempts.get(ip);
+  if (!item || item.reset < now) {
+    loginAttempts.delete(ip);
+    return false;
+  }
+  return item.count >= 8;
+}
+
+function recordLoginFailure(ip) {
+  const now = Date.now();
+  const item = loginAttempts.get(ip);
+  if (!item || item.reset < now) loginAttempts.set(ip, { count: 1, reset: now + 60_000 });
+  else item.count++;
+}
+
+function lanAddresses() {
+  const found = [];
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const info of interfaces[name] || []) {
+      if (info.family !== "IPv4" || info.internal) continue;
+      if (!found.includes(info.address)) found.push(info.address);
+    }
+  }
+  found.sort((a, b) => {
+    const score = (ip) => ip.startsWith("192.168.") ? 0 : ip.startsWith("10.") ? 1 : ip.startsWith("172.") ? 2 : 3;
+    return score(a) - score(b);
+  });
+  return found;
+}
+
+function lanUrl() {
+  if (IS_LOOPBACK) return "";
+  const address = HOST === "0.0.0.0" ? (lanAddresses()[0] || "") : HOST;
+  if (!address) return "";
+  return `http://${address}:${PORT}`;
+}
+
+function makeQr(text) {
+  const qr = qrcode(0, "M");
+  qr.addData(text);
+  qr.make();
+  return qr;
+}
+
+function qrSvg(text) {
+  return makeQr(text).createSvgTag(5, 4);
+}
+
+function qrTerminal(text) {
+  const qr = makeQr(text);
+  const count = qr.getModuleCount();
+  const quiet = 2;
+  const dark = "\x1b[40m  \x1b[0m";
+  const light = "\x1b[47m  \x1b[0m";
+  const lines = [];
+  for (let r = -quiet; r < count + quiet; r++) {
+    let line = "";
+    for (let c = -quiet; c < count + quiet; c++) {
+      const on = r >= 0 && r < count && c >= 0 && c < count && qr.isDark(r, c);
+      line += on ? dark : light;
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+function accessStatus(req) {
+  return {
+    required: AUTH_REQUIRED,
+    authenticated: isAuthenticated(req),
+    lan: !IS_LOOPBACK,
+    lanUrl: lanUrl(),
+    addresses: lanAddresses(),
+  };
+}
+
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
@@ -103,9 +262,16 @@ function setSecurityHeaders(res) {
 
 function sameOrigin(req) {
   const origin = req.headers.origin;
-  if (!origin) return true; // curl / local tools
+  // file:// pages and sandboxed iframes send "Origin: null". Never treat that
+  // as same-origin: a localhost service must not accept opaque-origin POSTs.
+  if (origin === "null") return false;
+  const site = String(req.headers["sec-fetch-site"] || "");
+  if (site && site !== "same-origin" && site !== "none") return false;
+  if (!origin) return true;
   try {
-    return new URL(origin).host === req.headers.host;
+    const parsed = new URL(origin);
+    const protocolOk = parsed.protocol === "http:" || parsed.protocol === "https:";
+    return protocolOk && parsed.host === req.headers.host;
   } catch {
     return false;
   }
@@ -230,6 +396,102 @@ async function saveApiKey(rawKey) {
   } catch (err) {
     return { ok: false, error: "写入 secrets.json 失败：" + err.message };
   }
+}
+
+/* ============================================================
+   Workspace selection
+   ============================================================ */
+function readAppConfig() {
+  try {
+    return safeJsonParse(fs.readFileSync(CONFIG_PATH, "utf8"), {}) || {};
+  } catch {
+    return {};
+  }
+}
+
+function loadWorkspaceSetting() {
+  const saved = String(readAppConfig().workspace || "").trim();
+  if (!saved || !path.isAbsolute(saved)) return "";
+  try {
+    if (!fs.statSync(saved).isDirectory()) return "";
+    return path.resolve(saved);
+  } catch {
+    return "";
+  }
+}
+
+function saveWorkspaceSetting(target) {
+  const data = readAppConfig();
+  if (target) data.workspace = target;
+  else delete data.workspace;
+  const tmp = CONFIG_PATH + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+  fs.renameSync(tmp, CONFIG_PATH);
+}
+
+function isSubPath(parent, child) {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function validateWorkspaceTarget(input) {
+  const target = path.resolve(String(input || "").trim());
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    throw Object.assign(new Error("目录不存在。"), { status: 400 });
+  }
+  if (!stat.isDirectory()) throw Object.assign(new Error("请选择一个文件夹，而不是文件。"), { status: 400 });
+  try {
+    fs.accessSync(target, fs.constants.W_OK);
+  } catch {
+    throw Object.assign(new Error("这个目录不可写。"), { status: 400 });
+  }
+  if (isSubPath(target, DATA_ROOT)) {
+    throw Object.assign(new Error("工作区不能是应用数据目录或其上级目录，否则 Agent 可能读到密钥。"), { status: 400 });
+  }
+  return target;
+}
+
+function browseDirectories(input) {
+  if (!input) {
+    const entries = [];
+    if (process.platform === "win32") {
+      for (let i = 65; i <= 90; i++) {
+        const root = String.fromCharCode(i) + ":\\";
+        try {
+          if (fs.statSync(root).isDirectory()) entries.push({ name: root, path: root });
+        } catch { /* skip missing drive */ }
+      }
+    } else {
+      entries.push({ name: "/", path: "/" });
+    }
+    return { path: "", parent: null, entries };
+  }
+  const target = path.resolve(String(input));
+  const stat = fs.statSync(target);
+  if (!stat.isDirectory()) throw new Error("不是文件夹。");
+  const entries = [];
+  const items = fs.readdirSync(target, { withFileTypes: true });
+  for (const item of items) {
+    if (!item.isDirectory()) continue;
+    if (item.name === "$RECYCLE.BIN" || item.name === "System Volume Information") continue;
+    entries.push({ name: item.name, path: path.join(target, item.name) });
+    if (entries.length >= 300) break;
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  const parent = path.dirname(target);
+  return { path: target, parent: parent === target ? null : parent, entries };
+}
+
+function workspaceInfo() {
+  return {
+    path: WORKSPACE,
+    defaultPath: DEFAULT_WORKSPACE,
+    dataRoot: DATA_ROOT,
+    exists: fs.existsSync(WORKSPACE),
+  };
 }
 
 /* ============================================================
@@ -365,6 +627,91 @@ async function searchBingRss(query, limit) {
   return results;
 }
 
+async function searchSearxng(query, limit) {
+  if (!SEARXNG_URL) throw new Error("未配置 SEARXNG_URL");
+  const endpoint = SEARXNG_URL.endsWith("/search") ? SEARXNG_URL : SEARXNG_URL + "/search";
+  const url = new URL(endpoint);
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("language", "zh-CN");
+  url.searchParams.set("safesearch", "0");
+  const res = await fetchWithTimeout(url.toString(), {
+    headers: { Accept: "application/json", "User-Agent": "DeepSeek-Web/1.2" },
+  }, 12000);
+  if (!res.ok) throw new Error("SearXNG 返回 " + res.status);
+  const data = await res.json();
+  const rows = Array.isArray(data.results) ? data.results : [];
+  return rows.slice(0, limit).map((r) => ({
+    title: stripTags(r.title || r.url),
+    url: r.url,
+    snippet: stripTags(r.content || r.snippet || ""),
+  }));
+}
+
+async function searchSerper(query, limit) {
+  if (!SERPER_API_KEY) throw new Error("未配置 SERPER_API_KEY");
+  const res = await fetchWithTimeout("https://google.serper.dev/search", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-KEY": SERPER_API_KEY,
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ q: query, gl: "cn", hl: "zh-cn", num: limit }),
+  }, 12000);
+  if (!res.ok) throw new Error("Serper 返回 " + res.status);
+  const data = await res.json();
+  return (Array.isArray(data.organic) ? data.organic : []).slice(0, limit).map((r) => ({
+    title: stripTags(r.title || r.link),
+    url: r.link,
+    snippet: stripTags(r.snippet || ""),
+  }));
+}
+
+async function searchTavily(query, limit) {
+  if (!TAVILY_API_KEY) throw new Error("未配置 TAVILY_API_KEY");
+  const res = await fetchWithTimeout("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      api_key: TAVILY_API_KEY,
+      query,
+      search_depth: "basic",
+      max_results: limit,
+      include_answer: false,
+    }),
+  }, 12000);
+  if (!res.ok) throw new Error("Tavily 返回 " + res.status);
+  const data = await res.json();
+  return (Array.isArray(data.results) ? data.results : []).slice(0, limit).map((r) => ({
+    title: stripTags(r.title || r.url),
+    url: r.url,
+    snippet: stripTags(r.content || ""),
+  }));
+}
+
+function configuredSearchProviders() {
+  const plan = [];
+  if (SEARCH_PROVIDER === "auto") {
+    if (SEARXNG_URL) plan.push({ name: "searxng", fn: searchSearxng });
+    if (SERPER_API_KEY) plan.push({ name: "serper", fn: searchSerper });
+    if (TAVILY_API_KEY) plan.push({ name: "tavily", fn: searchTavily });
+    plan.push({ name: "duckduckgo", fn: searchDuckDuckGo });
+    plan.push({ name: "bing-rss", fn: searchBingRss });
+    return plan;
+  }
+  if (SEARCH_PROVIDER === "searxng" && SEARXNG_URL) plan.push({ name: "searxng", fn: searchSearxng });
+  if (SEARCH_PROVIDER === "serper" && SERPER_API_KEY) plan.push({ name: "serper", fn: searchSerper });
+  if (SEARCH_PROVIDER === "tavily" && TAVILY_API_KEY) plan.push({ name: "tavily", fn: searchTavily });
+  if (SEARCH_PROVIDER === "ddg" || SEARCH_PROVIDER === "duckduckgo") plan.push({ name: "duckduckgo", fn: searchDuckDuckGo });
+  if (SEARCH_PROVIDER === "bing" || SEARCH_PROVIDER === "bing-rss") plan.push({ name: "bing-rss", fn: searchBingRss });
+  return plan;
+}
+
+function searchProviderNames() {
+  return configuredSearchProviders().map((p) => p.name);
+}
+
 async function webSearch(query, limit = 6) {
   const q = truncate(String(query || "").replace(/\s+/g, " ").trim(), 240);
   if (!q) throw new Error("搜索词为空");
@@ -375,9 +722,13 @@ async function webSearch(query, limit = 6) {
   }
 
   const errors = [];
-  for (const provider of [searchDuckDuckGo, searchBingRss]) {
+  const providers = configuredSearchProviders();
+  if (!providers.length) {
+    throw new Error("没有可用的搜索服务，请配置 SEARXNG_URL、SERPER_API_KEY 或 TAVILY_API_KEY");
+  }
+  for (const provider of providers) {
     try {
-      const results = await provider(q, limit);
+      const results = await provider.fn(q, limit);
       const unique = [];
       const seen = new Set();
       for (const item of results) {
@@ -666,11 +1017,13 @@ function allowedExtension(rel) {
   ]).has(ext);
 }
 
-async function readWorkspaceText(rel, maxChars = 60000) {
+async function readWorkspaceText(rel, maxChars = READ_DEFAULT_CHARS, offset = 0) {
   const { rel: clean, abs } = workspacePath(rel);
   const st = await fsp.stat(abs);
   if (!st.isFile()) throw new Error("不是文件：" + clean);
-  if (st.size > 1.5 * 1024 * 1024) throw new Error("文件太大（" + Math.round(st.size / 1024) + " KB），请分段处理。");
+  if (st.size > MAX_FILE_BYTES) {
+    throw new Error("文件太大（" + Math.round(st.size / 1024 / 1024) + " MB），上限 " + Math.round(MAX_FILE_BYTES / 1024 / 1024) + " MB。");
+  }
   const buffer = await fsp.readFile(abs);
   let text = buffer.toString("utf8");
   // Recover common Chinese legacy encodings instead of sending a screen of U+FFFD.
@@ -680,8 +1033,26 @@ async function readWorkspaceText(rel, maxChars = 60000) {
       if (alt && !alt.includes("\uFFFD")) text = alt;
     } catch { /* not available */ }
   }
-  const clipped = text.length > maxChars ? text.slice(0, maxChars) + "\n…（内容过长，已截断）" : text;
-  return { rel: clean, abs, size: st.size, text: clipped };
+  const totalChars = text.length;
+  const start = clampInteger(offset, 0, totalChars, 0);
+  const limit = clampInteger(maxChars, 1000, READ_MAX_CHARS, READ_DEFAULT_CHARS);
+  const end = Math.min(totalChars, start + limit);
+  return {
+    rel: clean,
+    abs,
+    size: st.size,
+    text: text.slice(start, end),
+    totalChars,
+    start,
+    end,
+    nextOffset: end < totalChars ? end : null,
+  };
+}
+
+function clampInteger(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
 async function listWorkspace() {
@@ -898,10 +1269,14 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "read_file",
-      description: "读取 agent-workspace 内的一个文本文件。只能使用相对路径。",
+      description: "分块读取当前工作区内的一个文本文件。大文件请使用 offset/limit 继续读取，不要一次读完。",
       parameters: {
         type: "object",
-        properties: { path: { type: "string", description: "相对 agent-workspace 的路径，例如 notes.md" } },
+        properties: {
+          path: { type: "string", description: "相对当前工作区的路径，例如 notes.md" },
+          offset: { type: "number", description: "从第几个字符开始读，默认 0" },
+          limit: { type: "number", description: "本次最多读取多少字符，默认 50000，最大 200000" },
+        },
         required: ["path"],
       },
     },
@@ -918,12 +1293,13 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "write_file",
-      description: "在 agent-workspace 内创建或覆盖一个文本文件。正式写入前系统会把 diff 展示给用户并等待确认；dry_run=true 只预演，不写入、不弹确认。修改已有文件会自动备份 .bak（上一代 .bak.1）。",
+      description: "在当前工作区内创建、覆盖或追加一个文本文件。单次 content 上限 12 KB（约 150 行），文件上限 24 MB；大文件必须用 append=true 分块写入。正式写入前系统会展示 diff 并等待用户确认；dry_run=true 只预演。修改已有文件会自动备份 .bak（上一代 .bak.1）。",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "相对 agent-workspace 的路径，例如 reports/analysis.md" },
-          content: { type: "string", description: "完整的文件内容；不要省略" },
+          path: { type: "string", description: "相对当前工作区的路径，例如 reports/analysis.md" },
+          content: { type: "string", description: "本次写入的内容；大文件分块写入，不要省略" },
+          append: { type: "boolean", description: "true = 追加到现有文件末尾；false/省略 = 覆盖" },
           dry_run: { type: "boolean", description: "true = 只生成 diff 预览，不写入" },
         },
         required: ["path", "content"],
@@ -971,11 +1347,14 @@ async function executeAgentTool(name, args, ctx) {
   }
 
   if (name === "read_file") {
-    const file = await readWorkspaceText(args.path, 50000);
+    const offset = clampInteger(args.offset, 0, Number.MAX_SAFE_INTEGER, 0);
+    const limit = clampInteger(args.limit, 1000, READ_MAX_CHARS, READ_DEFAULT_CHARS);
+    const file = await readWorkspaceText(args.path, limit, offset);
+    const next = file.nextOffset == null ? "已到文件末尾" : `下一段从 offset=${file.nextOffset} 继续`;
     return {
       ok: true,
-      summary: "已读取 " + file.text.length + " 字符",
-      modelText: `文件 ${file.rel}（${file.size} 字节）：\n\n\`\`\`\n${file.text}\n\`\`\``,
+      summary: `已读取 ${file.start}-${file.end}/${file.totalChars} 字符`,
+      modelText: `文件 ${file.rel}（${file.size} 字节，共 ${file.totalChars} 字符）\n读取范围：${file.start}-${file.end}；${next}\n\n\`\`\`\n${file.text}\n\`\`\``,
     };
   }
 
@@ -1016,16 +1395,16 @@ async function executeAgentTool(name, args, ctx) {
   if (name === "write_file") {
     const content = String(args.content ?? "");
     if (!content) return { ok: false, summary: "文件内容为空。", modelText: "错误：content 不能为空。" };
-    if (content.length > 500000) {
-      return { ok: false, summary: "内容超过 500 KB。", modelText: "错误：内容过长，请分成多个文件或分段写入。" };
+    if (Buffer.byteLength(content, "utf8") > MAX_WRITE_BYTES) {
+      return {
+        ok: false,
+        summary: `单次内容超过 ${MAX_WRITE_BYTES / 1024} KB。`,
+        modelText: `错误：单次 content 超过 ${MAX_WRITE_BYTES / 1024} KB。请用 append=true 分块写入（每块不超过约 150 行），或拆成多个文件。`,
+      };
     }
     const { rel, abs } = workspacePath(args.path);
     if (!allowedExtension(rel)) {
       return { ok: false, summary: "不支持的文件类型。", modelText: "错误：只允许写入文本类文件（.md/.txt/.json/.csv/.html/.css/.js/.ts/.py/.yml/.xml/.sql）。" };
-    }
-    const validation = validateFileContent(rel, content);
-    if (validation) {
-      return { ok: false, summary: "写入前检查未通过。", modelText: "错误：" + validation + " 未写入任何文件。" };
     }
     let oldText = "";
     let isNew = true;
@@ -1037,20 +1416,40 @@ async function executeAgentTool(name, args, ctx) {
       oldText = "";
       isNew = true;
     }
-    const diff = diffLines(oldText, content, rel);
+    const append = !!args.append && !isNew;
+    const nextContent = append ? oldText + content : content;
+    const finalSize = Buffer.byteLength(nextContent, "utf8");
+    if (finalSize > MAX_FILE_BYTES) {
+      return {
+        ok: false,
+        summary: `文件超过 ${MAX_FILE_BYTES / 1024 / 1024} MB 上限。`,
+        modelText: "错误：最终文件过大，请拆分文件或先清理内容。",
+      };
+    }
+    const validation = validateFileContent(rel, nextContent);
+    if (validation) {
+      return { ok: false, summary: "写入前检查未通过。", modelText: "错误：" + validation + " 未写入任何文件。" };
+    }
+    const diff = diffLines(oldText, nextContent, rel);
     const dryRun = !!args.dry_run;
     if (dryRun) {
       return {
         ok: true,
         summary: "预演完成（未写入）：" + diff.split("\n").filter((l) => /^[+-]/.test(l)).length + " 行变更",
-        modelText: `写入预演（未写入）${rel}：\n\n\`\`\`diff\n${truncate(diff, 12000)}\n\`\`\`\n\n如果确认无误，请再次调用 write_file，并把 dry_run 设为 false。`,
+        modelText: `写入预演（未写入）${rel}${append ? "（追加）" : ""}：\n\n\`\`\`diff\n${truncate(diff, 12000)}\n\`\`\`\n\n如果确认无误，请再次调用 write_file，并把 dry_run 设为 false。`,
         diff,
       };
     }
-    const decision = await requestConfirmation(run, sse, {
-      stepId, callId, rel, diff, isNew, preview: content.slice(0, 1800),
-    });
-    sse.send({ type: "confirmation_result", id: stepId, approved: !!decision.approved, timedOut: !!decision.timedOut });
+    let decision;
+    if (run.fullAccess) {
+      decision = { approved: true, auto: true };
+      sse.send({ type: "full_access_write", id: stepId, path: rel });
+    } else {
+      decision = await requestConfirmation(run, sse, {
+        stepId, callId, rel, diff, isNew, preview: nextContent.slice(0, 1800),
+      });
+      sse.send({ type: "confirmation_result", id: stepId, approved: !!decision.approved, timedOut: !!decision.timedOut });
+    }
     if (!decision.approved) {
       return {
         ok: false,
@@ -1063,16 +1462,24 @@ async function executeAgentTool(name, args, ctx) {
     }
     if (run.controller.signal.aborted) throw abortError();
     const hadBackup = await backupFile(abs);
-    await writeFileAtomic(abs, content);
-    const size = Buffer.byteLength(content, "utf8");
-    const artifact = artifactFor(rel, size);
+    await writeFileAtomic(abs, nextContent);
+    const written = await fsp.stat(abs);
+    if (written.size !== finalSize) {
+      return {
+        ok: false,
+        summary: "写入后回读校验失败。",
+        modelText: `错误：文件写入后大小不一致（期望 ${finalSize}，实际 ${written.size}），请检查磁盘空间或权限。`,
+      };
+    }
+    const artifact = artifactFor(rel, finalSize);
     return {
       ok: true,
       summary: "已写入 " + rel + (hadBackup ? "（已备份 .bak）" : "（新文件）"),
-      modelText: `已写入 ${rel}，共 ${content.split("\n").length} 行，${size} 字节。` +
+      modelText: `已${append ? "追加" : "写入"} ${rel}，当前共 ${nextContent.split("\n").length} 行，${finalSize} 字节。` +
         (hadBackup ? "原文件已备份为 .bak，上一代在 .bak.1。" : "这是一个新文件。"),
       artifact,
       diff,
+      autoApproved: !!decision.auto,
     };
   }
 
@@ -1083,7 +1490,7 @@ function agentSystemPrompt() {
   return [
     "你是 DeepSeek Agent，运行在一个以对话为主的本地网页端。用户显式切换到 Agent 模式，才执行多步任务。",
     "",
-    "工作区：agent-workspace/。所有文件工具只能使用相对路径，不能访问工作区之外。",
+    `工作区：${WORKSPACE}。所有文件工具只能使用相对此目录的路径，不能访问工作区之外。`,
     "",
     "工作方式：",
     "1. 先理解目标和约束，用一两句话说明你准备怎么做，然后调用工具推进。",
@@ -1093,7 +1500,10 @@ function agentSystemPrompt() {
     "5. 用 task_plan 维护任务状态，尤其是步骤较多的任务。每完成一个阶段就更新一次。",
     "6. 不要请求执行 shell，不要读取工作区之外的路径，不要输出或猜测 API Key。",
     "7. 如果用户拒绝写入，明确说明文件未改动，并根据反馈调整。",
-    "8. 最终用中文 Markdown 总结：完成了什么、产出文件在哪里、下一步建议。不要只写「已完成」。",
+    "8. 大文件必须分块：读文件用 read_file 的 offset/limit 继续读；写文件单次 content 不超过 12 KB（约 150 行），追加用 append=true，文件上限 24 MB。一次写不完就分多次 append，不要反复原样重试。",
+    "9. 多文件任务先用 task_plan 落一份清单，每完成一项更新进度；轮次有限（15 轮），不要把预算浪费在重复读同一个文件上。",
+    "10. 能力边界：可以写文本/Markdown/ASCII 图/代码、读写文件、搜索网页；不能生成真实位图、CAD 二进制、视频或施工级图纸。遇到这类请求，先说明能做/不能做/替代方案，再问最多 3 个关键问题，其余参数给默认值。",
+    "11. 最终用中文 Markdown 总结：完成了什么、产出文件在哪里、下一步建议。未完成的步骤必须明确列出，不要只写「已完成」。",
     "",
     "当前时间：" + new Date().toLocaleString("zh-CN", { hour12: false }),
     "对话是默认入口；Agent 只在被明确需要时工作，不要为了展示能力而调用无关工具。",
@@ -1105,15 +1515,23 @@ function evidenceSummary(evidence) {
   return evidence.slice(-10).map((item, i) => `- ${item.tool}: ${truncate(item.text, 220)}`).join("\n");
 }
 
-async function finalizeWithEvidence(messages, evidence, run) {
+function gapSuffix(unfinished) {
+  if (!unfinished || !unfinished.length) return "";
+  const unique = [...new Set(unfinished)].slice(0, 8);
+  return "\n\n---\n### 未完成 / 需要你确认\n" + unique.map((item) => "- " + item).join("\n");
+}
+
+async function finalizeWithEvidence(messages, evidence, run, unfinished = []) {
   const evidenceText = evidenceSummary(evidence);
   const instruction = [
     "工具轮次已经用尽。不要再调用任何工具。",
     "请只基于上面的工具结果，用中文给出最终答复。",
     "如果证据不足，如实说明缺口，不要编造。",
+    "不要声称未实际完成的操作已经完成。",
     "",
     "【这一轮已经拿到的工具结果】",
     evidenceText,
+    unfinished.length ? "\n【已知未完成项】\n" + unfinished.map((x) => "- " + x).join("\n") : "",
   ].join("\n");
   try {
     const res = await requestModel({
@@ -1125,7 +1543,7 @@ async function finalizeWithEvidence(messages, evidence, run) {
     }, run.controller.signal);
     const data = await readModelJson(res);
     const text = (data.content || "").trim();
-    if (text) return text;
+    if (text) return text + gapSuffix(unfinished);
   } catch (err) {
     if (isAbortError(err)) throw err;
     log("agent finalize fallback:", err.message);
@@ -1134,14 +1552,23 @@ async function finalizeWithEvidence(messages, evidence, run) {
     "工具轮次已用尽，先把这一轮已经拿到的结果直接摆出来：",
     "",
     evidenceText,
+    gapSuffix(unfinished).trim(),
     "",
     "你可以让我展开其中某一条，或者缩小范围再试一次。",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 async function runAgent(run, inputMessages, sse) {
   const messages = [{ role: "system", content: agentSystemPrompt() }, ...inputMessages];
   const evidence = [];
+  const unfinished = [];
+  const seenGaps = new Set();
+  function addGap(text) {
+    const value = truncate(String(text || ""), 260);
+    if (!value || seenGaps.has(value)) return;
+    seenGaps.add(value);
+    if (unfinished.length < 10) unfinished.push(value);
+  }
   let seq = 0;
   let lastSignature = "";
   let repeats = 0;
@@ -1151,7 +1578,7 @@ async function runAgent(run, inputMessages, sse) {
     if (run.controller.signal.aborted) throw abortError();
     sse.send({
       type: "status",
-      message: round === 1 ? "正在理解任务并规划…" : `正在继续第 ${round} 轮…`,
+      message: round === 1 ? "正在理解任务并规划…" : `正在继续第 ${round}/${MAX_AGENT_ROUNDS} 轮…`,
     });
 
     const result = await (async () => {
@@ -1159,7 +1586,7 @@ async function runAgent(run, inputMessages, sse) {
         model: MODEL_AGENT,
         messages,
         stream: true,
-        max_tokens: 4096,
+        max_tokens: 8192,
         temperature: 0.4,
         tools: AGENT_TOOLS,
         tool_choice: "auto",
@@ -1171,10 +1598,10 @@ async function runAgent(run, inputMessages, sse) {
     if (!calls.length) {
       const finalText = (result.content || "").trim();
       if (finalText) {
-        sse.send({ type: "final", content: finalText });
+        sse.send({ type: "final", content: finalText + gapSuffix(unfinished) });
         return;
       }
-      const fallback = await finalizeWithEvidence(messages, evidence, run);
+      const fallback = await finalizeWithEvidence(messages, evidence, run, unfinished);
       sse.send({ type: "final", content: fallback });
       return;
     }
@@ -1230,6 +1657,7 @@ async function runAgent(run, inputMessages, sse) {
 
       if (parseError) {
         const text = "工具参数不完整或不是合法 JSON，本次调用没有执行。请缩短参数或分次写入。错误：" + parseError;
+        addGap(toolLabel(name) + " 未执行：" + parseError);
         sse.send({ type: "tool_end", id: stepId, status: "error", summary: "参数不完整，未执行。" });
         messages.push({ role: "tool", tool_call_id: call.id, content: text });
         evidence.push({ tool: name, text });
@@ -1243,6 +1671,7 @@ async function runAgent(run, inputMessages, sse) {
         sse.send({ type: "tool_end", id: stepId, status: "error", summary: "检测到重复调用，提前收尾。" });
         messages.push({ role: "tool", tool_call_id: call.id, content: "检测到重复调用，已停止继续执行。" });
         evidence.push({ tool: name, text: "同一工具调用重复出现 3 次，已停止。" });
+        addGap("检测到重复工具调用，后续步骤没有执行。");
         // Every tool_call id in the assistant turn needs a tool reply, otherwise the
         // finalization request is an invalid OpenAI message sequence.
         for (let rest = callIndex + 1; rest < calls.length; rest++) {
@@ -1257,6 +1686,7 @@ async function runAgent(run, inputMessages, sse) {
       }
 
       let toolResult;
+      const toolStarted = Date.now();
       try {
         toolResult = await executeAgentTool(name, args, { run, sse, stepId, callId: call.id, round });
       } catch (err) {
@@ -1267,6 +1697,16 @@ async function runAgent(run, inputMessages, sse) {
           modelText: "工具执行失败：" + err.message,
         };
       }
+      if (!toolResult.ok) {
+        addGap(toolLabel(name) + " 未完成：" + (toolResult.summary || "工具执行失败"));
+      }
+      log("agent tool", {
+        name,
+        argChars: JSON.stringify(args).length,
+        ms: Date.now() - toolStarted,
+        ok: !!toolResult.ok,
+        summary: truncate(toolResult.summary || "", 120),
+      });
 
       sse.send({
         type: "tool_end",
@@ -1275,6 +1715,7 @@ async function runAgent(run, inputMessages, sse) {
         summary: toolResult.summary || (toolResult.ok ? "完成" : "失败"),
         sources: toolResult.sources,
         artifact: toolResult.artifact,
+        autoApproved: !!toolResult.autoApproved,
       });
       messages.push({
         role: "tool",
@@ -1285,7 +1726,8 @@ async function runAgent(run, inputMessages, sse) {
     }
   }
 
-  const fallback = await finalizeWithEvidence(messages, evidence, run);
+  if (!stopLoop) addGap(`达到最大工具轮次（${MAX_AGENT_ROUNDS}），任务可能没有全部完成。`);
+  const fallback = await finalizeWithEvidence(messages, evidence, run, unfinished);
   sse.send({ type: "final", content: fallback });
 }
 
@@ -1305,6 +1747,7 @@ async function handleAgent(req, res, body) {
     controller: new AbortController(),
     pending: new Map(),
     startedAt: Date.now(),
+    fullAccess: !!(body.fullAccess === true && body.fullAccessAck === true),
   };
   agentRuns.set(runId, run);
 
@@ -1449,7 +1892,97 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 415, { error: "POST 请求必须使用 application/json。" });
   }
 
+  const publicPaths = new Set([
+    "/api/auth/status",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/lan-info",
+    "/api/lan-qr.svg",
+  ]);
+  if (url.pathname.startsWith("/api/") && AUTH_REQUIRED && !isAuthenticated(req) && !publicPaths.has(url.pathname)) {
+    return sendJson(res, 401, { error: "需要访问口令。", authRequired: true });
+  }
+
   try {
+    if (req.method === "GET" && url.pathname === "/api/auth/status") {
+      return sendJson(res, 200, Object.assign({ ok: true, version: VERSION }, accessStatus(req)));
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/login") {
+      if (!AUTH_REQUIRED) return sendJson(res, 200, { ok: true, required: false });
+      const ip = clientAddress(req);
+      if (loginBlocked(ip)) {
+        return sendJson(res, 429, { error: "尝试次数过多，请 1 分钟后再试。" });
+      }
+      const body = await readJson(req, 16 * 1024);
+      if (!passwordMatches(body.password)) {
+        recordLoginFailure(ip);
+        return sendJson(res, 401, { error: "访问口令不正确。" });
+      }
+      loginAttempts.delete(ip);
+      createSession(res);
+      return sendJson(res, 200, { ok: true, required: true });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+      clearSession(req, res);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/lan-info") {
+      return sendJson(res, 200, {
+        ok: true,
+        lan: !IS_LOOPBACK,
+        url: lanUrl(),
+        addresses: lanAddresses(),
+        authRequired: AUTH_REQUIRED,
+        port: PORT,
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/lan-qr.svg") {
+      const target = lanUrl();
+      if (!target) return sendJson(res, 404, { error: "当前没有可用的局域网地址。" });
+      const svg = qrSvg(target);
+      res.writeHead(200, {
+        "Content-Type": "image/svg+xml; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Content-Length": Buffer.byteLength(svg),
+      });
+      return res.end(svg);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workspace") {
+      return sendJson(res, 200, Object.assign({ ok: true }, workspaceInfo()));
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workspace") {
+      if (agentRuns.size > 0) {
+        return sendJson(res, 409, { error: "Agent 正在执行任务，结束后再切换工作区。" });
+      }
+      const body = await readJson(req, 64 * 1024);
+      const requested = String(body.path || "").trim();
+      const target = requested ? validateWorkspaceTarget(requested) : DEFAULT_WORKSPACE;
+      try {
+        saveWorkspaceSetting(requested ? target : "");
+        WORKSPACE = target;
+        fs.mkdirSync(WORKSPACE, { recursive: true });
+      } catch (err) {
+        return sendJson(res, 500, { error: "保存工作区失败：" + err.message });
+      }
+      log("Agent 工作区已切换:", WORKSPACE);
+      return sendJson(res, 200, Object.assign({ ok: true }, workspaceInfo()));
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workspace/browse") {
+      try {
+        const data = browseDirectories(url.searchParams.get("path") || "");
+        return sendJson(res, 200, Object.assign({ ok: true }, data));
+      } catch (err) {
+        return sendJson(res, 400, { error: "无法浏览目录：" + err.message });
+      }
+    }
+
     if (req.method === "GET" && url.pathname === "/api/status") {
       const key = keyStatus();
       return sendJson(res, 200, {
@@ -1458,8 +1991,18 @@ const server = http.createServer(async (req, res) => {
         key,
         models: { chat: MODEL_CHAT, reasoner: MODEL_REASONER, agent: MODEL_AGENT },
         search: true,
+        searchProviders: searchProviderNames(),
+        searchConfig: {
+          searxng: !!SEARXNG_URL,
+          serper: !!SERPER_API_KEY,
+          tavily: !!TAVILY_API_KEY,
+          provider: SEARCH_PROVIDER,
+        },
+        authRequired: AUTH_REQUIRED,
+        lanUrl: lanUrl(),
+        lanAddresses: lanAddresses(),
         agent: true,
-        workspace: "agent-workspace",
+        workspace: WORKSPACE,
         host: HOST,
       });
     }
@@ -1568,8 +2111,24 @@ server.listen(PORT, HOST, () => {
   log("模型:", MODEL_CHAT, "/", MODEL_REASONER, "/ agent:", MODEL_AGENT);
   log("API Key:", status.configured ? `已配置（${status.source}，${status.hint}）` : "未配置（演示模式）");
   log("工作区:", WORKSPACE);
-  if (HOST !== "127.0.0.1" && HOST !== "localhost") {
-    log("警告：服务未绑定回环地址，局域网内其他人可能访问 Agent 文件接口。");
+  if (AUTH_REQUIRED) {
+    log("访问口令:", GENERATED_PASSWORD ? ACCESS_PASSWORD : "已通过 ACCESS_PASSWORD 配置");
+    log("登录后 7 天内免输；重启服务会失效。");
+  } else if (!IS_LOOPBACK) {
+    log("警告：局域网模式没有访问口令，任何同一网络的人都能调用接口。");
+  }
+  const phoneUrl = lanUrl();
+  if (phoneUrl) {
+    log("手机访问:", phoneUrl);
+    try {
+      console.log(qrTerminal(phoneUrl));
+      log("用手机相机扫描上面的二维码；口令见上一行。");
+    } catch (err) {
+      log("二维码生成失败，请在设置 → 手机访问 中查看。", err.message);
+    }
+  }
+  if (!IS_LOOPBACK) {
+    log("警告：服务已绑定局域网地址，请确认只在可信网络使用。");
   }
   openBrowser(url);
 });

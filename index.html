@@ -15,6 +15,24 @@
     <div class="wallpaper-slides" id="wallpaperSlides"></div>
     <div class="wallpaper-veil"></div>
   </div>
+  <div class="login-screen" id="loginScreen" hidden>
+    <div class="login-card">
+      <div class="login-brand">
+        <span class="brand-mark"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
+        <span><strong>DeepSeek Web</strong><small>LAN ACCESS</small></span>
+      </div>
+      <h1>需要访问口令</h1>
+      <p class="login-sub">这台设备正在通过局域网访问。请输入电脑控制台显示的访问口令。</p>
+      <form class="login-form" id="loginForm">
+        <label class="sr-only" for="loginPassword">访问口令</label>
+        <input id="loginPassword" type="password" placeholder="访问口令" autocomplete="current-password" spellcheck="false">
+        <button class="btn btn-primary" id="loginSubmit" type="submit">进入</button>
+      </form>
+      <p class="login-error" id="loginError" role="alert"></p>
+      <p class="login-foot">口令只保存在当前服务进程内；重启服务后会生成新的口令。</p>
+    </div>
+  </div>
+
   <a class="skip-link" href="#composerInput">跳到输入框</a>
 
   <svg class="svg-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -255,7 +273,7 @@
               <div class="agent-tools" id="agentTools" hidden>
                 <span class="agent-tool"><svg><use href="#i-globe"/></svg>联网搜索</span>
                 <span class="agent-tool"><svg><use href="#i-file"/></svg>文件读写</span>
-                <span class="agent-tool"><svg><use href="#i-shield"/></svg>写入需确认</span>
+                <button class="agent-tool agent-access-btn" id="agentAccessBtn" type="button"><svg><use href="#i-shield"/></svg><span id="agentAccessText">逐次确认</span></button>
               </div>
             </div>
 
@@ -369,6 +387,7 @@
 
         <div class="wallpaper-rotation">
           <span class="wallpaper-count" id="wallpaperCount">0 张壁纸</span>
+          <span class="wallpaper-storage" id="wallpaperStorage">正在读取存储配额…</span>
           <label class="check-line" for="wpRotate">
             <input id="wpRotate" type="checkbox">
             <span>自动轮播</span>
@@ -381,6 +400,64 @@
           <button class="btn btn-ghost btn-small" id="wallpaperDisable" type="button">关闭壁纸</button>
         </div>
         <p class="settings-hint">建议使用横向图片（16:9 或更宽）。壁纸与调节参数保存在本机；清空浏览器站点数据会一并删除。</p>
+      </section>
+
+      <section class="settings-section lan-settings" id="lanSection">
+        <div class="settings-section-head">
+          <div>
+            <h3>手机访问</h3>
+            <p>让同一 Wi-Fi 下的手机打开这个网页端。</p>
+          </div>
+          <span class="status-pill" id="lanStatusPill"><span></span>本机模式</span>
+        </div>
+        <div class="lan-card" id="lanCard">
+          <div class="lan-qr-wrap" id="lanQrWrap">
+            <img id="lanQr" alt="手机访问二维码" width="132" height="132">
+          </div>
+          <div class="lan-copy">
+            <code id="lanUrl">仅本机访问</code>
+            <div class="lan-actions">
+              <button class="btn btn-ghost btn-small" id="copyLanUrl" type="button">复制地址</button>
+              <button class="btn btn-ghost btn-small" id="logoutBtn" type="button" hidden>退出登录</button>
+            </div>
+            <p class="lan-hint" id="lanHint">运行 <code>start-lan.cmd</code> 后，这里会显示局域网地址和二维码。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section workspace-settings" id="workspaceSection">
+        <div class="settings-section-head">
+          <div>
+            <h3>Agent 工作区</h3>
+            <p>Agent 只能读写这个目录。切换到代码库或文档目录前请确认。</p>
+          </div>
+          <span class="status-pill is-ok" id="workspaceStatusPill"><span></span>可写</span>
+        </div>
+        <div class="workspace-card">
+          <div class="workspace-current">
+            <span class="workspace-folder"><svg><use href="#i-folder"/></svg></span>
+            <code id="workspacePath">读取中…</code>
+          </div>
+          <div class="workspace-actions">
+            <button class="btn btn-ghost btn-small" id="chooseWorkspace" type="button"><svg><use href="#i-folder"/></svg>选择文件夹</button>
+            <button class="btn btn-ghost btn-small" id="resetWorkspace" type="button">恢复默认</button>
+          </div>
+        </div>
+        <p class="settings-hint" id="workspaceHint">只允许相对路径；写文件仍会先展示 diff 并等待你确认。</p>
+      </section>
+
+      <section class="settings-section permission-settings" id="permissionSection">
+        <div class="settings-section-head">
+          <div>
+            <h3>Agent 权限</h3>
+            <p>默认每次写入都展示 diff。完全权限会跳过逐次确认。</p>
+          </div>
+          <span class="status-pill" id="fullAccessPill"><span></span>逐次确认</span>
+        </div>
+        <div class="permission-card">
+          <p id="fullAccessHint">Agent 写文件前会展示 diff，需要你点击允许。</p>
+          <button class="btn btn-ghost btn-small" id="fullAccessSettingsBtn" type="button"><svg><use href="#i-shield"/></svg>开启完全权限</button>
+        </div>
       </section>
 
       <section class="settings-section">
@@ -432,11 +509,64 @@
       <section class="settings-section about-section">
         <div class="about-brand">
           <span class="brand-mark small"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
-          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.0</small></div>
+          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2</small></div>
         </div>
         <p>界面与 Agent 工程参考 <em>Professional Agent</em> 的工具循环、diff 审批、备份恢复与密钥管理设计。聊天是默认入口，Agent 只在需要时出现。</p>
         <div class="about-badges"><span>Chat first</span><span>Local-first</span><span>Human in the loop</span></div>
       </section>
+    </div>
+  </dialog>
+
+  <dialog class="dialog workspace-dialog" id="workspaceDialog" aria-labelledby="workspaceDialogTitle">
+    <div class="dialog-head">
+      <div>
+        <p class="dialog-kicker">AGENT · WORKSPACE</p>
+        <h2 id="workspaceDialogTitle">选择 Agent 工作区</h2>
+      </div>
+      <button class="icon-btn dialog-close" type="button" data-close-dialog="workspaceDialog" aria-label="关闭">
+        <svg><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="workspace-browser">
+      <div class="workspace-nav">
+        <button class="icon-btn" id="workspaceUp" type="button" aria-label="上一级" title="上一级">
+          <svg><use href="#i-arrow-up"/></svg>
+        </button>
+        <code id="workspaceBrowsePath">此电脑</code>
+      </div>
+      <div class="workspace-list" id="workspaceList"></div>
+      <p class="workspace-error" id="workspaceError"></p>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" id="workspaceCancel" type="button">取消</button>
+      <button class="btn btn-primary" id="workspaceSelect" type="button" disabled>选择此文件夹</button>
+    </div>
+  </dialog>
+
+  <dialog class="dialog full-access-dialog" id="fullAccessDialog" aria-labelledby="fullAccessTitle">
+    <div class="confirm-head">
+      <span class="confirm-warn"><svg><use href="#i-shield"/></svg></span>
+      <div>
+        <p class="dialog-kicker">AGENT · 高风险模式</p>
+        <h2 id="fullAccessTitle">开启完全权限模式</h2>
+        <p>开启后 Agent 会在当前工作区内直接写入文件。</p>
+      </div>
+    </div>
+    <div class="full-access-body">
+      <ul class="risk-list">
+        <li><strong>跳过逐次确认</strong><span>写文件不再弹出 diff 审批，但仍会保留 .bak / .bak.1 备份。</span></li>
+        <li><strong>只限当前工作区</strong><span id="fullAccessWorkspacePath">—</span></li>
+        <li><strong>自动失效</strong><span>60 分钟、刷新页面、重启服务或切换工作区后失效。</span></li>
+        <li><strong>建议</strong><span>只在测试目录、临时目录或已有版本控制的项目中使用；不要指向含密钥的目录。</span></li>
+      </ul>
+      <label class="risk-check">
+        <input id="fullAccessAck" type="checkbox">
+        <span>我已了解上述风险，并确认允许 Agent 在当前工作区自动写入文件。</span>
+      </label>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" id="fullAccessCancel" type="button">取消</button>
+      <button class="btn btn-danger" id="fullAccessEnable" type="button" disabled>开启完全权限</button>
     </div>
   </dialog>
 

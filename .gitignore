@@ -5,6 +5,8 @@ dist/
 scenario-*.png
 secrets.json
 secrets.json.tmp
+config.json
+config.json.tmp
 agent-workspace/*
 !agent-workspace/.gitkeep
 *.bak
