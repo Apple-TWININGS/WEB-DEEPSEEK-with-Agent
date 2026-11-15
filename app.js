@@ -1192,7 +1192,7 @@
       els.workspaceDialog.showModal();
       document.body.classList.add("dialog-open");
     }
-    await browseWorkspace(state.workspace.path || "");
+    await browseWorkspace(state.workspace.defaultPath || state.workspace.path || "");
   }
 
   async function browseWorkspace(targetPath) {
@@ -1249,30 +1249,26 @@
       }
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) throw new Error(data.error || "切换失败");
-      var conv = activeConversation();
-      conv.workspace = data.path || state.workspaceBrowsePath;
-      conv.updatedAt = now();
       disableFullAccess(true);
+      var conv = makeConversation("agent");
+      conv.workspace = data.path || state.workspaceBrowsePath;
+      state.conversations.unshift(conv);
+      state.activeId = conv.id;
+      state.settings.mode = "agent";
+      state.attachments = [];
       closeWorkspaceDialog();
+      syncComposerFromActive();
+      updateModeUI();
       renderWorkspaceInfo();
+      renderSidebar();
+      renderChat({ forceBottom: true });
       scheduleSave();
-      toast("当前对话工作区已切换", "success");
+      toast("Agent 对话已创建", "success");
+      setTimeout(function () { els.composerInput.focus(); }, 30);
     } catch (e) {
       els.workspaceError.textContent = friendlyError(e);
       els.workspaceSelect.disabled = false;
     }
-  }
-
-  async function resetWorkspace() {
-    if (!window.confirm("把当前对话恢复到默认工作区？")) return;
-    var conv = activeConversation();
-    conv.workspace = "";
-    conv.updatedAt = now();
-    disableFullAccess(true);
-    await loadWorkspaceInfo();
-    renderWorkspaceInfo();
-    scheduleSave();
-    toast("当前对话已恢复默认工作区", "success");
   }
 
   /* ============================================================
@@ -1506,6 +1502,7 @@
     if (!conv) return;
     state.activeId = id;
     state.settings.mode = conv.mode === "agent" ? "agent" : "chat";
+    if (isFullAccessActive()) disableFullAccess(true);
     state.attachments = [];
     closeSidebar();
     syncComposerFromActive();
@@ -1534,6 +1531,7 @@
       state.activeId = conv.id;
     }
     state.settings.mode = mode;
+    if (isFullAccessActive()) disableFullAccess(true);
     state.attachments = [];
     closeSidebar();
     syncComposerFromActive();
@@ -3438,7 +3436,7 @@
   function bindEvents() {
     /* Sidebar */
     els.newChatBtn.addEventListener("click", function () { newChat("chat"); });
-    els.newAgentBtn.addEventListener("click", function () { newChat("agent"); });
+    els.newAgentBtn.addEventListener("click", openWorkspaceDialog);
     els.collapseBtn.addEventListener("click", function () {
       state.settings.sidebarCollapsed = !document.getElementById("appShell").classList.contains("is-collapsed");
       syncSidebarCollapse();
@@ -3475,10 +3473,7 @@
         setActiveConversation(item.dataset.convId);
       }
     });
-    els.agentEntry.addEventListener("click", function () {
-      newChat("agent");
-      toast("已进入 Agent 工作台");
-    });
+    els.agentEntry.addEventListener("click", openWorkspaceDialog);
     els.accountBtn.addEventListener("click", openSettings);
     els.settingsBtn.addEventListener("click", openSettings);
     els.mobileMenuBtn.addEventListener("click", openSidebar);
@@ -3500,8 +3495,6 @@
       }).catch(function () { toast("复制失败", "error"); });
     });
     els.logoutBtn.addEventListener("click", logoutLan);
-    els.chooseWorkspace.addEventListener("click", openWorkspaceDialog);
-    els.resetWorkspace.addEventListener("click", resetWorkspace);
     els.workspaceCancel.addEventListener("click", closeWorkspaceDialog);
     els.workspaceSelect.addEventListener("click", selectCurrentWorkspace);
     els.workspaceUp.addEventListener("click", function () {
@@ -3636,7 +3629,8 @@
       }
       var cta = e.target.closest("#agentCta");
       if (cta) {
-        newChat(state.settings.mode === "agent" ? "chat" : "agent");
+        if (state.settings.mode === "agent") newChat("chat");
+        else openWorkspaceDialog();
       }
     });
 
@@ -3804,7 +3798,7 @@
       var meta = isMac ? e.metaKey : e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        newChat(state.settings.mode);
+        newChat("chat");
       } else if (meta && e.key === "/") {
         e.preventDefault();
         els.composerInput.focus();
@@ -3877,12 +3871,6 @@
     els.lanHint = $("#lanHint");
     els.copyLanUrl = $("#copyLanUrl");
     els.logoutBtn = $("#logoutBtn");
-    els.workspaceSection = $("#workspaceSection");
-    els.workspacePath = $("#workspacePath");
-    els.workspaceHint = $("#workspaceHint");
-    els.workspaceStatusPill = $("#workspaceStatusPill");
-    els.chooseWorkspace = $("#chooseWorkspace");
-    els.resetWorkspace = $("#resetWorkspace");
     els.workspaceDialog = $("#workspaceDialog");
     els.workspaceUp = $("#workspaceUp");
     els.workspaceBrowsePath = $("#workspaceBrowsePath");

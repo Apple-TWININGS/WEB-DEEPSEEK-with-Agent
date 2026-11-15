@@ -34,7 +34,7 @@ const DEFAULT_WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.2.2";
+const VERSION = "1.2.3";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";

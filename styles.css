@@ -2331,6 +2331,7 @@ body.has-wallpaper .login-card {
 }
 .workspace-actions { display: flex; gap: 5px; flex-wrap: wrap; }
 .workspace-dialog { width: min(660px, calc(100vw - 30px)); }
+.workspace-dialog-sub { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .workspace-browser { padding: 12px 22px 0; }
 .workspace-nav {
   display: flex;
