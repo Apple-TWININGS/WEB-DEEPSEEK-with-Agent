@@ -1,0 +1,161 @@
+# DeepSeek Web
+
+一个以**对话为主、Agent 为辅**的本地 DeepSeek 网页端。聊天是默认入口；需要多步任务时，再切换到 Agent。Agent 的写文件操作会先展示 diff，只有你确认后才会落盘，并保留 `.bak` 备份。
+
+> 这是一个本地优先的非官方界面，不是 DeepSeek 官方客户端。界面使用 DeepSeek 名称与鲸鱼标识用于展示目的。
+
+![首页](screenshots/home-light.png)
+
+## 它是什么
+
+| 默认：对话 | 需要时：Agent |
+| --- | --- |
+| 流式回答、Markdown、代码高亮与复制 | 多轮工具循环，最多 6 轮 |
+| 深度思考（`deepseek-reasoner`） | 联网搜索、读取/列出/写入文件、任务计划 |
+| 联网搜索与引用来源 | 写文件前 diff 审批，可拒绝 |
+| 历史记录、搜索、导出、主题、移动端 | 自动 `.bak` / `.bak.1` 备份，原子写入 |
+
+Agent 只在手动切换后启动，不会在普通聊天里擅自调用工具。
+
+## 快速开始
+
+需要 **Node.js 20+**，没有第三方依赖。
+
+```text
+双击 start.cmd
+```
+
+或者手动启动：
+
+```powershell
+cd deepseek-web
+node server.mjs
+# 打开 http://127.0.0.1:4173
+```
+
+首次启动没有 API Key 时进入**演示模式**：回答由本地示例生成，不请求外部模型。点击右上角“演示模式”或设置图标，在“模型服务”里填入 Key 即可切换为真实模型。
+
+Key 也可以由环境变量提供：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "sk-..."
+node server.mjs
+```
+
+## 配置
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | 空 | 优先生效；其次读取 `secrets.json` |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 可指向兼容 OpenAI Chat Completions 的服务 |
+| `DEEPSEEK_MODEL` | `deepseek-chat` | 普通对话模型 |
+| `DEEPSEEK_REASONER_MODEL` | `deepseek-reasoner` | 深度思考模型 |
+| `DEEPSEEK_AGENT_MODEL` | `deepseek-chat` | Agent 工具循环模型 |
+| `PORT` | `4173` | 本地端口 |
+| `HOST` | `127.0.0.1` | 监听地址。改成 `0.0.0.0` 前请阅读安全说明 |
+
+页面设置中的 Key 只会写入本机：
+
+```text
+deepseek-web/secrets.json
+```
+
+服务端只向页面返回配置状态、长度和掩码，不回发明文。读取优先级为：
+
+```text
+环境变量 DEEPSEEK_API_KEY  →  secrets.json
+```
+
+## Agent 是怎么执行的
+
+![Agent 写入确认](screenshots/agent-approval.png)
+
+```text
+用户任务
+  ↓
+系统提示 + 对话上下文 + 工具 schema
+  ↓
+流式模型调用（累积 tool_calls 参数）
+  ↓
+执行工具 ── web_search / read_file / list_files / write_file / task_plan
+  ↓              │
+  │              └─ write_file：生成 unified diff
+  │                    ↓
+  │                  SSE 推给前端，弹出确认框
+  │                    ↓
+  │              用户允许 → .bak 备份 → 原子写入 → 产出可下载文件
+  │              用户拒绝 → 返回“未写入”给模型，继续调整
+  ↓
+最终回答 + 执行轨迹 + 来源 + 产出文件
+```
+
+安全边界：
+
+- 文件工具只能访问 `agent-workspace/` 内的相对路径，拒绝 `..`、绝对路径和盘符；
+- 只允许文本类扩展名，单文件内容上限 500 KB；
+- `.json` 在写入前做语法检查；
+- 不提供 shell 工具，不允许读取工作区外文件；
+- 写文件不是模型直接完成的：服务端先发 diff，等待前端 `POST /api/agent/decision` 才执行；
+- 修改已有文件时保留两代备份；写入采用临时文件 + rename；
+- 工具轮次、单轮工具数量、重复调用都有上限；轮次用尽时会基于已有证据做收尾，而不是丢掉一切；
+- 页面和 API 只绑定 `127.0.0.1`；POST 请求校验同源和 `application/json`。
+
+## 项目结构
+
+```text
+deepseek-web/
+  index.html            页面骨架、图标 sprite、设置与确认弹窗
+  styles.css            主题、响应式布局、消息/Agent 轨迹/diff 样式
+  markdown.js           无依赖 Markdown 渲染器（先转义，再格式化）
+  app.js                状态、渲染、聊天、Agent 事件、审批流程
+  server.mjs            静态服务 + DeepSeek 代理 + Agent 工具循环
+  agent-workspace/      Agent 唯一可写目录（产物可下载）
+  deepseek-icon.png     鲸鱼标识
+  start.cmd             双击启动
+```
+
+前端是原生 HTML/CSS/JS，没有构建步骤；`server.mjs` 只使用 Node 内置模块。
+
+## 接口
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/status` | 服务状态、Key 掩码、模型配置 |
+| `POST` | `/api/key` | 保存/清除本机 Key |
+| `POST` | `/api/test` | 测试模型接口连通性 |
+| `POST` | `/api/chat` | SSE 流式聊天，可选服务端联网搜索 |
+| `POST` | `/api/agent` | SSE Agent 执行流 |
+| `POST` | `/api/agent/decision` | 批准/拒绝一次文件写入 |
+| `GET` | `/api/files/<path>` | 下载 Agent 产物 |
+
+## 参考与设计来源
+
+Agent 的工程约束参考了本机的 **Professional Agent** 项目：
+
+- 流式累积 `tool_calls`，参数不完整时不执行；
+- 工具轮次上限、重复调用检测、轮次用尽后的证据收尾；
+- 写入前 diff 审批、两代 `.bak` 备份、原子写入；
+- Key 只落到 `secrets.json`，环境变量优先，只回传掩码；
+- 外部能力失败时降级，而不是让整个页面不可用。
+
+这个网页端把上述模式收在浏览器里，同时保留聊天作为默认、低摩擦的入口。
+
+## 已知边界
+
+- **单用户、本地优先**。没有账号系统；不要在不可信网络上用 `HOST=0.0.0.0` 暴露它。
+- 演示模式不会发起真实搜索，也不会写磁盘。
+- 联网搜索使用 DuckDuckGo HTML，失败时回退 Bing RSS；搜索结果质量取决于上游服务。
+- Agent 只处理文本文件，不执行命令，不处理二进制/图片。
+- 浏览器 `localStorage` 存对话，容量有限；大量附件建议直接让 Agent 读工作区文件。
+- 没有实现多模型路由、云同步、团队协作。
+
+## 检查
+
+```powershell
+node --check app.js
+node --check markdown.js
+node --check server.mjs
+Invoke-RestMethod http://127.0.0.1:4173/api/status
+```
+
+更完整的本地演示截图在 [`screenshots/`](screenshots/)。

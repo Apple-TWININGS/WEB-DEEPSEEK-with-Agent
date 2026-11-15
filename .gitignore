@@ -1,0 +1,23 @@
+# Local-only secrets and runtime state
+secrets.json
+secrets.json.tmp
+agent-workspace/*
+!agent-workspace/.gitkeep
+*.bak
+*.bak.*
+
+# Temporary browser/test profiles
+.chrome-profile*/
+.cdp-profile*/
+chrome-profile*/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/

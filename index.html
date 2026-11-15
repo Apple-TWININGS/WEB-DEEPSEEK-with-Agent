@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#4d6bfe">
+  <meta name="description" content="DeepSeek Web - 以对话为主、Agent 为辅的本地 AI 工作台">
+  <title>DeepSeek · 深度对话</title>
+  <link rel="icon" type="image/png" href="deepseek-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#composerInput">跳到输入框</a>
+
+  <svg class="svg-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.2 4.2"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.09A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.09A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.04V3h4v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.96 10H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.4 14.4A8.7 8.7 0 0 1 9.6 3.6 8.8 8.8 0 1 0 20.4 14.4Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m20 11.5-7.6 7.6a5 5 0 0 1-7.1-7.1l8.2-8.2a3.3 3.3 0 0 1 4.7 4.7l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.5-7.5"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9.5 4.2A3.2 3.2 0 0 0 6.3 7.4a3 3 0 0 0-1.8 5.4 3.1 3.1 0 0 0 1.4 5.4A3.2 3.2 0 0 0 12 19V5.6a2.7 2.7 0 0 0-2.5-1.4Z"/><path d="M14.5 4.2a3.2 3.2 0 0 1 3.2 3.2 3 3 0 0 1 1.8 5.4 3.1 3.1 0 0 1-1.4 5.4A3.2 3.2 0 0 1 12 19"/><path d="M9 9H7.7M15 9h1.3M9 13.5H7.8M15 13.5h1.2"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.4 3.8 5.5 3.8 9s-1.3 6.6-3.8 9c-2.5-2.4-3.8-5.5-3.8-9S9.5 5.4 12 3Z"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 6.8"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M19.2 15a8 8 0 1 1-.7-8.5L20 11"/></symbol>
+    <symbol id="i-thumb-up" viewBox="0 0 24 24"><path d="M7 10v10H4V10h3ZM7 19c2 1.4 4 2 6.2 2h2.3a3 3 0 0 0 3-2.4l1.2-6A2.4 2.4 0 0 0 17.3 9H14l.5-3.2A2.5 2.5 0 0 0 12 3.2L7 10"/></symbol>
+    <symbol id="i-thumb-down" viewBox="0 0 24 24"><path d="M17 14V4h3v10h-3ZM17 5c-2-1.4-4-2-6.2-2H8.5a3 3 0 0 0-3 2.4l-1.2 6A2.4 2.4 0 0 0 6.7 15H10l-.5 3.2A2.5 2.5 0 0 0 12 20.8L17 14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 5l-4 14"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20l4.2-1L19 8.2a2.5 2.5 0 0 0-3.5-3.5L4.8 15.4 4 20Z"/><path d="m13.5 6.5 4 4"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z"/><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18l-1.8-5.4L4.5 10.8 10.2 9 12 3.5ZM19 3v3M17.5 4.5h3M5 17v3M3.5 18.5h3"/></symbol>
+    <symbol id="i-robot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4M8 3.5h8M9 12h.01M15 12h.01M9 16h6"/><path d="M2 11v4M22 11v4"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 12.5a7.5 7.5 0 0 1-7.5 7.5H5l-2 2V12.5A7.5 7.5 0 0 1 10.5 5h2A7.5 7.5 0 0 1 20 12.5Z"/><path d="M8 11.5h.01M12 11.5h.01M16 11.5h.01"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h7l5 5v13H6V3Z"/><path d="M13 3v5h5M9 13h6M9 17h6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l2 2M14 9l2 2"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v6c0 4.5 3 8 7.5 9.5C16.5 20 19.5 16.5 19.5 12V6L12 3Z"/><path d="m8.8 12 2.2 2.2 4.4-4.4"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="i-whale" viewBox="0 0 64 64"><path d="M10 35.8c6.9 11.8 22.2 15.4 33 7.5 5.4-3.9 8.6-9.2 9.8-14.6 2 5.2 5.7 8.8 10.4 10.3-3.8 13.3-16.2 22.5-30.8 21.8C20.8 60.3 11 53.1 6.2 42.1l3.8-6.3Z"/><circle cx="20.5" cy="31.3" r="2.5"/><path d="M39 28.7c3.8-.9 7.1-.3 9.8 1.8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-loader" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-9 9"/></symbol>
+    <symbol id="i-warning" viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v5M12 17.2v.1"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 6.1A10.4 10.4 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.2 3.7M6.2 6.2C3.9 8 2.5 12 2.5 12S6 18 12 18c1.4 0 2.7-.3 3.8-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4"/></symbol>
+  </svg>
+
+  <div class="app-shell" id="appShell">
+    <aside class="sidebar" id="sidebar" aria-label="对话列表">
+      <div class="sidebar-head">
+        <a class="brand" href="#" id="brandHome" aria-label="DeepSeek 首页">
+          <span class="brand-mark"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
+          <span class="brand-word">deepseek</span>
+          <span class="brand-tag">WEB</span>
+        </a>
+        <button class="icon-btn sidebar-collapse" id="collapseBtn" type="button" aria-label="收起侧栏" title="收起侧栏">
+          <svg><use href="#i-panel"/></svg>
+        </button>
+      </div>
+
+      <button class="new-chat" id="newChatBtn" type="button" aria-label="新建对话">
+        <span class="new-chat-icon"><svg><use href="#i-plus"/></svg></span>
+        <span class="new-chat-label">新建对话</span>
+        <kbd class="new-chat-kbd">Ctrl K</kbd>
+      </button>
+
+      <div class="side-search">
+        <svg class="side-search-icon"><use href="#i-search"/></svg>
+        <input id="conversationSearch" type="search" placeholder="搜索对话" autocomplete="off" aria-label="搜索对话">
+        <button class="search-clear" id="searchClear" type="button" aria-label="清空搜索" hidden><svg><use href="#i-x"/></svg></button>
+      </div>
+
+      <div class="conversation-scroll" id="conversationList"></div>
+
+      <div class="sidebar-foot">
+        <button class="agent-entry" id="agentEntry" type="button">
+          <span class="agent-entry-icon"><svg><use href="#i-robot"/></svg></span>
+          <span class="agent-entry-copy">
+            <strong>Agent 工作台</strong>
+            <small>多步任务 · 文件读写</small>
+          </span>
+          <span class="agent-entry-dot"></span>
+        </button>
+        <div class="account-row">
+          <button class="account-btn" id="accountBtn" type="button" aria-label="打开设置">
+            <span class="avatar avatar-user">我</span>
+            <span class="account-copy">
+              <strong>本地工作区</strong>
+              <small id="planLabel">免费版 · 本地优先</small>
+            </span>
+          </button>
+          <button class="icon-btn" id="settingsBtn" type="button" aria-label="设置" title="设置">
+            <svg><use href="#i-settings"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="sidebar-scrim" id="sidebarScrim" hidden></div>
+
+    <main class="main" id="main">
+      <header class="topbar">
+        <button class="icon-btn mobile-menu" id="mobileMenuBtn" type="button" aria-label="打开侧栏">
+          <svg><use href="#i-menu"/></svg>
+        </button>
+        <div class="topbar-title">
+          <span class="topbar-title-text" id="chatTitle">新对话</span>
+          <span class="mode-badge" id="modeBadge" hidden><svg><use href="#i-robot"/></svg>Agent</span>
+        </div>
+        <div class="topbar-actions">
+          <button class="connection-chip" id="connectionChip" type="button" aria-label="查看模型服务状态">
+            <span class="connection-dot"></span>
+            <span id="connectionText">检测中</span>
+          </button>
+          <button class="icon-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换主题">
+            <svg><use href="#i-moon"/></svg>
+          </button>
+          <button class="icon-btn" id="exportBtn" type="button" aria-label="导出当前对话" title="导出当前对话">
+            <svg><use href="#i-download"/></svg>
+          </button>
+          <button class="icon-btn" id="topSettingsBtn" type="button" aria-label="设置" title="设置">
+            <svg><use href="#i-settings"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="demo-banner" id="demoBanner" hidden>
+        <span class="demo-banner-icon"><svg><use href="#i-sparkles"/></svg></span>
+        <p id="demoBannerText">当前为演示模式，回答由本地示例生成。配置 API Key 后可连接真实模型。</p>
+        <button class="demo-banner-action" id="demoBannerAction" type="button">接入模型</button>
+        <button class="icon-btn demo-banner-close" id="demoBannerClose" type="button" aria-label="关闭提示">
+          <svg><use href="#i-x"/></svg>
+        </button>
+      </div>
+
+      <section class="chat-scroll" id="chatScroll">
+        <div class="chat-inner" id="chatInner">
+          <section class="welcome" id="welcome" aria-labelledby="welcomeTitle">
+            <div class="hero-visual" data-mode="chat">
+              <div class="hero-glow"></div>
+              <div class="hero-ring ring-one"></div>
+              <div class="hero-ring ring-two"></div>
+              <div class="hero-mark">
+                <img class="hero-logo" src="deepseek-icon.png" alt="">
+              </div>
+            </div>
+            <p class="hero-eyebrow"><span></span>DEEPSEEK WEB<span></span></p>
+            <h1 class="hero-title" id="welcomeTitle">你好，我是 <em>DeepSeek</em>。</h1>
+            <p class="hero-sub" id="heroSub">写代码、读文件、理清复杂问题。大多数时候，我们像朋友一样对话；需要完成多步任务时，再把方向盘交给 Agent。</p>
+
+            <div class="suggestion-grid" id="suggestionGrid">
+              <button class="suggestion-card" type="button" data-prompt="用 Python 写一个批量重命名文件的脚本，并解释每一段的作用。">
+                <span class="suggestion-icon tone-blue"><svg><use href="#i-code"/></svg></span>
+                <span class="suggestion-copy"><strong>写一段代码</strong><small>Python 批量重命名脚本</small></span>
+                <svg class="suggestion-arrow"><use href="#i-arrow-right"/></svg>
+              </button>
+              <button class="suggestion-card" type="button" data-prompt="帮我写一段新产品发布文案，语气克制、有画面感，控制在 150 字以内。">
+                <span class="suggestion-icon tone-violet"><svg><use href="#i-pen"/></svg></span>
+                <span class="suggestion-copy"><strong>润色一段文案</strong><small>克制、有画面感的发布文案</small></span>
+                <svg class="suggestion-arrow"><use href="#i-arrow-right"/></svg>
+              </button>
+              <button class="suggestion-card" type="button" data-prompt="我想在三个月内系统学习前端开发，请制定一份每周可执行的学习计划。">
+                <span class="suggestion-icon tone-amber"><svg><use href="#i-book"/></svg></span>
+                <span class="suggestion-copy"><strong>制定学习计划</strong><small>三个月的前端学习路线</small></span>
+                <svg class="suggestion-arrow"><use href="#i-arrow-right"/></svg>
+              </button>
+              <button class="suggestion-card" type="button" data-prompt="帮我把“本地优先的 AI 助手”这个想法拆成产品功能、技术方案和上线步骤。">
+                <span class="suggestion-icon tone-teal"><svg><use href="#i-sparkles"/></svg></span>
+                <span class="suggestion-copy"><strong>梳理一个想法</strong><small>从产品到上线的拆解</small></span>
+                <svg class="suggestion-arrow"><use href="#i-arrow-right"/></svg>
+              </button>
+            </div>
+
+            <button class="agent-cta" id="agentCta" type="button">
+              <span class="agent-cta-icon"><svg><use href="#i-robot"/></svg></span>
+              <span><strong>需要多步完成？交给 Agent</strong><small>它会规划、调用工具，并在写文件前请你确认</small></span>
+              <svg class="agent-cta-arrow"><use href="#i-arrow-right"/></svg>
+            </button>
+
+            <div class="hero-footnote">
+              <span><svg><use href="#i-shield"/></svg>本地优先</span>
+              <span><svg><use href="#i-file"/></svg>文件产出可下载</span>
+              <span><svg><use href="#i-check"/></svg>写入前二次确认</span>
+            </div>
+          </section>
+
+          <div class="messages" id="messages" aria-live="polite" aria-relevant="additions text"></div>
+        </div>
+      </section>
+
+      <button class="scroll-bottom" id="scrollBottom" type="button" aria-label="回到底部" hidden>
+        <svg><use href="#i-arrow-down"/></svg>
+        <span>回到最新</span>
+      </button>
+
+      <div class="composer-wrap">
+        <form class="composer" id="composer" autocomplete="off">
+          <div class="attachment-tray" id="attachmentTray" hidden></div>
+          <label class="sr-only" for="composerInput">给 DeepSeek 发消息</label>
+          <textarea id="composerInput" class="composer-input" rows="1" maxlength="24000" placeholder="给 DeepSeek 发送消息" spellcheck="false"></textarea>
+
+          <div class="composer-bar">
+            <div class="composer-tools">
+              <button class="tool-btn attach-btn" id="attachBtn" type="button" aria-label="添加文本附件" title="添加文本附件">
+                <svg><use href="#i-paperclip"/></svg>
+              </button>
+              <input id="fileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.log,.js,.ts,.tsx,.jsx,.py,.html,.css,.yaml,.yml,.xml,.sql,.sh" multiple hidden>
+
+              <div class="mode-switch" id="modeSwitch" role="group" aria-label="工作模式">
+                <button class="mode-option is-active" type="button" data-mode="chat" aria-pressed="true">
+                  <svg><use href="#i-chat"/></svg><span>对话</span>
+                </button>
+                <button class="mode-option" type="button" data-mode="agent" aria-pressed="false">
+                  <svg><use href="#i-robot"/></svg><span>Agent</span>
+                </button>
+              </div>
+
+              <div class="mode-tools" id="chatTools">
+                <button class="tool-btn tool-toggle" id="thinkToggle" type="button" aria-pressed="false" title="深度思考">
+                  <svg><use href="#i-brain"/></svg><span>深度思考</span>
+                </button>
+                <button class="tool-btn tool-toggle" id="searchToggle" type="button" aria-pressed="false" title="联网搜索">
+                  <svg><use href="#i-globe"/></svg><span>联网搜索</span>
+                </button>
+              </div>
+              <div class="agent-tools" id="agentTools" hidden>
+                <span class="agent-tool"><svg><use href="#i-globe"/></svg>联网搜索</span>
+                <span class="agent-tool"><svg><use href="#i-file"/></svg>文件读写</span>
+                <span class="agent-tool"><svg><use href="#i-shield"/></svg>写入需确认</span>
+              </div>
+            </div>
+
+            <div class="composer-submit">
+              <span class="model-label" id="modelLabel">DeepSeek Chat</span>
+              <button class="send-btn" id="sendBtn" type="submit" aria-label="发送消息" title="发送">
+                <svg class="send-icon"><use href="#i-arrow-up"/></svg>
+                <svg class="stop-icon"><use href="#i-stop"/></svg>
+              </button>
+            </div>
+          </div>
+        </form>
+        <div class="composer-meta">
+          <span id="composerHint">Enter 发送 · Shift + Enter 换行</span>
+          <span class="composer-disclaimer">内容由 AI 生成，请仔细甄别</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+  <div class="context-menu" id="contextMenu" role="menu" hidden></div>
+
+  <dialog class="dialog settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
+    <div class="dialog-head">
+      <div>
+        <p class="dialog-kicker">DEEPSEEK WEB</p>
+        <h2 id="settingsTitle">设置</h2>
+      </div>
+      <button class="icon-btn dialog-close" type="button" data-close-dialog="settingsDialog" aria-label="关闭设置">
+        <svg><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="settings-body">
+      <section class="settings-section">
+        <div class="settings-section-head">
+          <div>
+            <h3>外观</h3>
+            <p>选择界面主题，跟随系统时会自动切换。</p>
+          </div>
+        </div>
+        <div class="theme-options" role="group" aria-label="主题">
+          <button class="theme-option" type="button" data-theme-choice="light">
+            <span class="theme-preview preview-light"><i></i><i></i><i></i></span>
+            <span><svg><use href="#i-sun"/></svg>浅色</span>
+          </button>
+          <button class="theme-option" type="button" data-theme-choice="dark">
+            <span class="theme-preview preview-dark"><i></i><i></i><i></i></span>
+            <span><svg><use href="#i-moon"/></svg>深色</span>
+          </button>
+          <button class="theme-option" type="button" data-theme-choice="system">
+            <span class="theme-preview preview-system"><i></i><i></i><i></i></span>
+            <span><svg><use href="#i-monitor"/></svg>跟随系统</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-head">
+          <div>
+            <h3>模型服务</h3>
+            <p>Key 只写入本机 <code>secrets.json</code>，接口只返回掩码，不回显明文。</p>
+          </div>
+          <span class="status-pill" id="keyStatusPill"><span></span>检测中</span>
+        </div>
+        <div class="key-input-row">
+          <div class="key-input-wrap">
+            <svg class="key-input-icon"><use href="#i-key"/></svg>
+            <input id="apiKeyInput" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" aria-label="DeepSeek API Key">
+            <button class="icon-btn key-visibility" id="keyVisibilityBtn" type="button" aria-label="显示或隐藏 Key">
+              <svg><use href="#i-eye"/></svg>
+            </button>
+          </div>
+          <button class="btn btn-primary" id="saveKeyBtn" type="button">保存</button>
+        </div>
+        <p class="settings-hint" id="keyHint">读取优先级：环境变量 <code>DEEPSEEK_API_KEY</code> → <code>secrets.json</code>。尚未检测本地服务。</p>
+        <div class="service-row">
+          <div class="service-meta">
+            <span class="service-dot" id="serviceDot"></span>
+            <span>本地服务</span>
+            <code id="serverAddress">127.0.0.1:4173</code>
+          </div>
+          <div class="settings-actions">
+            <button class="btn btn-ghost" id="testKeyBtn" type="button"><svg><use href="#i-refresh"/></svg>测试连接</button>
+            <button class="btn btn-ghost danger-text" id="clearKeyBtn" type="button">清除 Key</button>
+          </div>
+        </div>
+        <p class="settings-hint"><a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">前往 DeepSeek 开放平台获取 Key<svg class="inline-icon"><use href="#i-external"/></svg></a> · 本地界面不会把 Key 发给除模型接口外的任何地址。</p>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-head">
+          <div>
+            <h3>数据</h3>
+            <p>对话与偏好保存在当前浏览器；Agent 产出保存在本地工作区。</p>
+          </div>
+        </div>
+        <div class="settings-actions wide">
+          <button class="btn btn-ghost" id="exportAllBtn" type="button"><svg><use href="#i-download"/></svg>导出全部对话</button>
+          <button class="btn btn-ghost danger-text" id="clearAllBtn" type="button"><svg><use href="#i-trash"/></svg>清空全部对话</button>
+        </div>
+      </section>
+
+      <section class="settings-section about-section">
+        <div class="about-brand">
+          <span class="brand-mark small"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
+          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.0</small></div>
+        </div>
+        <p>界面与 Agent 工程参考 <em>Professional Agent</em> 的工具循环、diff 审批、备份恢复与密钥管理设计。聊天是默认入口，Agent 只在需要时出现。</p>
+        <div class="about-badges"><span>Chat first</span><span>Local-first</span><span>Human in the loop</span></div>
+      </section>
+    </div>
+  </dialog>
+
+  <dialog class="dialog confirm-dialog" id="confirmDialog" aria-labelledby="confirmTitle">
+    <div class="confirm-head">
+      <span class="confirm-warn"><svg><use href="#i-warning"/></svg></span>
+      <div>
+        <p class="dialog-kicker">AGENT · 需要你确认</p>
+        <h2 id="confirmTitle">Agent 请求写入文件</h2>
+        <p id="confirmSubtitle">请检查下面的改动，确认后才会写入磁盘。</p>
+      </div>
+    </div>
+    <div class="confirm-file">
+      <span class="confirm-file-icon"><svg><use href="#i-file"/></svg></span>
+      <code id="confirmPath">agent-workspace/未命名.md</code>
+      <span class="confirm-file-kind" id="confirmKind">修改</span>
+    </div>
+    <div class="diff-view" id="confirmDiff" aria-label="文件差异预览"></div>
+    <div class="confirm-note">
+      <svg><use href="#i-shield"/></svg>
+      <p>写入前会自动备份为 <code>.bak</code>，上一代保留在 <code>.bak.1</code>。拒绝后 Agent 会收到“未写入”的结果并继续调整。</p>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" id="confirmCancel" type="button">拒绝写入</button>
+      <button class="btn btn-primary" id="confirmApprove" type="button"><svg><use href="#i-check"/></svg>允许写入</button>
+    </div>
+  </dialog>
+
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

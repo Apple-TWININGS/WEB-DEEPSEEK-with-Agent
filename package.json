@@ -1,0 +1,13 @@
+{
+  "name": "deepseek-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chat-first DeepSeek web client with an approval-gated Agent mode.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
