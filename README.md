@@ -2,11 +2,15 @@
 
 一个以**对话为主、Agent 为辅**的本地 DeepSeek 网页端。聊天是默认入口；需要多步任务时，再切换到 Agent。Agent 的写文件操作会先展示 diff，只有你确认后才会落盘，并保留 `.bak` 备份。
 
+支持**自上传无限数量壁纸**、毛玻璃面板、壁纸/玻璃参数实时调节，以及可选的自动轮播。
+
 > 这是一个本地优先的非官方界面，不是 DeepSeek 官方客户端。界面使用 DeepSeek 名称与鲸鱼标识用于展示目的。
 
 ![首页](screenshots/home-light.png)
 
-## 它是什么
+![壁纸与玻璃面板](screenshots/wallpaper-light.png)
+
+## 功能
 
 | 默认：对话 | 需要时：Agent |
 | --- | --- |
@@ -14,18 +18,76 @@
 | 深度思考（`deepseek-reasoner`） | 联网搜索、读取/列出/写入文件、任务计划 |
 | 联网搜索与引用来源 | 写文件前 diff 审批，可拒绝 |
 | 历史记录、搜索、导出、主题、移动端 | 自动 `.bak` / `.bak.1` 备份，原子写入 |
+| 无限壁纸、毛玻璃面板、参数调节 | 产出文件可下载 |
 
 Agent 只在手动切换后启动，不会在普通聊天里擅自调用工具。
 
-## 快速开始
+## Windows EXE（推荐普通用户）
 
-需要 **Node.js 20+**，没有第三方依赖。
+发布页：
+
+**https://github.com/Apple-TWININGS/WEB-DEEPSEEK-with-Agent/releases/latest**
+
+### 安装/使用
+
+1. 从 Releases 下载 **`DeepSeek-Web.exe`**（约 88 MB）。
+2. 放到一个你有写权限的文件夹，例如 `D:\Apps\DeepSeek-Web\`。
+3. 双击运行。不需要安装 Node.js，也不需要管理员权限。
+4. 程序会启动本地服务并自动打开：
+   `http://127.0.0.1:4173`
+5. 第一次运行会打开浏览器；如果没有自动打开，手动访问上面的地址。
+6. 在页面右上角 **设置 → 模型服务** 填入 DeepSeek API Key，即可从演示模式切换到真实模型。
+
+运行时会出现一个命令行窗口，**关闭窗口或按 Ctrl+C 就会停止本地服务**。这是正常行为，不是安装器残留。
+
+### Windows SmartScreen
+
+EXE 目前**没有代码签名**，Windows 可能显示“Windows 已保护你的电脑”：
+
+```text
+更多信息 → 仍要运行
+```
+
+如果你介意未签名程序，可以按下面的“从源码运行”方式使用。
+
+### 数据目录
+
+EXE 版本的数据不放在 EXE 旁边，而是：
+
+```text
+%LOCALAPPDATA%\DeepSeek Web\
+  secrets.json          API Key
+  agent-workspace\      Agent 可写工作区与产出文件
+```
+
+- 升级：关闭旧窗口，用新的 `DeepSeek-Web.exe` 覆盖旧文件即可，数据保留。
+- 卸载：关闭窗口，删除 EXE；如不再需要数据，再手动删除 `%LOCALAPPDATA%\DeepSeek Web`。
+- 想使用便携数据目录，可以在启动前设置：
+
+```powershell
+$env:DEEPSEEK_WEB_DATA = "D:\DeepSeekData"
+.\DeepSeek-Web.exe
+```
+
+- 如果 4173 端口已被另一个实例占用，再启动 EXE 会直接打开已有页面。
+
+### 校验下载
+
+发布页同目录提供 `DeepSeek-Web.exe.sha256`。下载后可校验：
+
+```powershell
+Get-FileHash .\DeepSeek-Web.exe -Algorithm SHA256
+```
+
+## 从源码运行
+
+需要 **Node.js 20+**，没有第三方运行时依赖。
 
 ```text
 双击 start.cmd
 ```
 
-或者手动启动：
+或者：
 
 ```powershell
 cd deepseek-web
@@ -42,7 +104,7 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 node server.mjs
 ```
 
-## 配置
+### 配置项
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -53,11 +115,19 @@ node server.mjs
 | `DEEPSEEK_AGENT_MODEL` | `deepseek-chat` | Agent 工具循环模型 |
 | `PORT` | `4173` | 本地端口 |
 | `HOST` | `127.0.0.1` | 监听地址。改成 `0.0.0.0` 前请阅读安全说明 |
+| `DEEPSEEK_WEB_DATA` | 源码目录 / EXE 的 `%LOCALAPPDATA%` | 数据目录覆盖 |
+| `DEEPSEEK_WEB_OPEN_BROWSER` | EXE 为 `1` | 设为 `0` 可禁止自动打开浏览器 |
 
-页面设置中的 Key 只会写入本机：
+源码模式下，页面设置中的 Key 写入：
 
 ```text
 deepseek-web/secrets.json
+```
+
+EXE 模式下写入：
+
+```text
+%LOCALAPPDATA%\DeepSeek Web\secrets.json
 ```
 
 服务端只向页面返回配置状态、长度和掩码，不回发明文。读取优先级为：
@@ -65,6 +135,28 @@ deepseek-web/secrets.json
 ```text
 环境变量 DEEPSEEK_API_KEY  →  secrets.json
 ```
+
+## 壁纸与玻璃面板
+
+入口有两个：
+
+- 顶部工具栏的**图片图标**；
+- **设置 → 壁纸与玻璃**。
+
+能力：
+
+- 壁纸数量**不限**，单张最大 15 MB，支持 PNG / JPEG / WebP / GIF；
+- 上传后点击缩略图切换，点击垃圾桶删除；
+- 可调：壁纸浓度、模糊、明暗、缩放；
+- 可调：玻璃面板模糊、不透明度；
+- 可选自动轮播：30 秒 / 1 分钟 / 5 分钟；
+- 一键关闭壁纸，保留所有已上传内容，下次可重新启用。
+
+存储方式：
+
+- 图片 Blob 存在浏览器 **IndexedDB**；
+- 文件列表和参数存在 `localStorage`；
+- 不上传服务器。清除浏览器站点数据会同时删除壁纸。
 
 ## Agent 是怎么执行的
 
@@ -105,16 +197,53 @@ deepseek-web/secrets.json
 ```text
 deepseek-web/
   index.html            页面骨架、图标 sprite、设置与确认弹窗
-  styles.css            主题、响应式布局、消息/Agent 轨迹/diff 样式
+  styles.css            主题、壁纸/玻璃、响应式布局、消息/Agent 轨迹/diff 样式
   markdown.js           无依赖 Markdown 渲染器（先转义，再格式化）
-  app.js                状态、渲染、聊天、Agent 事件、审批流程
+  app.js                状态、渲染、聊天、Agent 事件、壁纸与审批流程
   server.mjs            静态服务 + DeepSeek 代理 + Agent 工具循环
+  packaging/
+    sea-entry.cjs       EXE 启动入口（数据目录 + 内嵌资源）
+  build-exe.cmd         双击构建 Windows EXE
+  build-exe.ps1         实际构建脚本
   agent-workspace/      Agent 唯一可写目录（产物可下载）
   deepseek-icon.png     鲸鱼标识
-  start.cmd             双击启动
+  start.cmd             源码模式双击启动
 ```
 
-前端是原生 HTML/CSS/JS，没有构建步骤；`server.mjs` 只使用 Node 内置模块。
+前端是原生 HTML/CSS/JS，没有前端构建步骤；`server.mjs` 只使用 Node 内置模块。
+
+## 从源码打包 EXE
+
+需要 Node.js 20+ 和 PowerShell。构建脚本会通过 `npx` 临时获取 `esbuild` 与 `postject`，不会把它们加入运行时依赖。
+
+最简单的方式是双击：
+
+```text
+build-exe.cmd
+```
+
+或者在 PowerShell 中执行：
+
+```powershell
+cd deepseek-web
+Set-ExecutionPolicy -Scope Process Bypass
+.\build-exe.ps1
+```
+
+输出：
+
+```text
+dist\DeepSeek-Web.exe
+dist\DeepSeek-Web.exe.sha256
+```
+
+说明：
+
+- EXE 由一个 Node 单文件可执行程序（SEA）内嵌静态资源构建；
+- 不包含 `secrets.json`，也不包含任何用户数据；
+- 首次运行才在 `%LOCALAPPDATA%\DeepSeek Web` 创建数据目录；
+- 生成的 EXE 未签名，Windows SmartScreen 可能提示；
+- 重新构建后 SHA256 会变化。
 
 ## 接口
 
@@ -147,6 +276,7 @@ Agent 的工程约束参考了本机的 **Professional Agent** 项目：
 - 联网搜索使用 DuckDuckGo HTML，失败时回退 Bing RSS；搜索结果质量取决于上游服务。
 - Agent 只处理文本文件，不执行命令，不处理二进制/图片。
 - 浏览器 `localStorage` 存对话，容量有限；大量附件建议直接让 Agent 读工作区文件。
+- 壁纸图片使用浏览器本地存储，清除站点数据会丢失；数量不限，但仍受浏览器存储配额限制。
 - 没有实现多模型路由、云同步、团队协作。
 
 ## 检查
@@ -158,4 +288,4 @@ node --check server.mjs
 Invoke-RestMethod http://127.0.0.1:4173/api/status
 ```
 
-更完整的本地演示截图在 [`screenshots/`](screenshots/)。
+更多界面截图在 [`screenshots/`](screenshots/)。

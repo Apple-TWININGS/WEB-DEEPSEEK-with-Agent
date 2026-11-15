@@ -14,11 +14,22 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const WORKSPACE = path.join(ROOT, "agent-workspace");
-const SECRETS_PATH = path.join(ROOT, "secrets.json");
+let SOURCE_FILE = "";
+try {
+  SOURCE_FILE = fileURLToPath(import.meta.url);
+} catch {
+  SOURCE_FILE = process.argv[1] || "";
+}
+const ROOT = SOURCE_FILE ? path.dirname(SOURCE_FILE) : process.cwd();
+const SEA_ASSETS = typeof globalThis.__DEEPSEEK_SEA_ASSETS__ === "function"
+  ? globalThis.__DEEPSEEK_SEA_ASSETS__
+  : null;
+const DATA_ROOT = globalThis.__DEEPSEEK_SEA_DATA_ROOT__ || ROOT;
+const WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
+const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const VERSION = "1.0.0";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
@@ -81,7 +92,7 @@ function setSecurityHeaders(res) {
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; " +
+    "img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; " +
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
   );
 }
@@ -1321,12 +1332,20 @@ async function handleDecision(req, res, body) {
 /* ============================================================
    Static / files
    ============================================================ */
+async function readStaticAsset(file) {
+  if (SEA_ASSETS) {
+    const data = SEA_ASSETS(file);
+    if (!data) throw new Error("内嵌资源不存在：" + file);
+    return Buffer.from(data);
+  }
+  return fsp.readFile(path.join(ROOT, file));
+}
+
 async function serveStatic(res, pathname) {
   const file = STATIC_FILES.get(pathname);
   if (!file) return false;
-  const abs = path.join(ROOT, file);
   try {
-    const data = await fsp.readFile(abs);
+    const data = await readStaticAsset(file);
     res.writeHead(200, {
       "Content-Type": MIME[path.extname(file)] || "application/octet-stream",
       "Content-Length": data.length,
@@ -1337,6 +1356,21 @@ async function serveStatic(res, pathname) {
   } catch (err) {
     sendJson(res, 500, { error: "读取页面文件失败：" + err.message });
     return true;
+  }
+}
+
+function openBrowser(url) {
+  if (process.env.DEEPSEEK_WEB_OPEN_BROWSER !== "1") return;
+  try {
+    if (process.platform === "win32") {
+      spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    } else if (process.platform === "darwin") {
+      spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+    } else {
+      spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    }
+  } catch {
+    /* the URL is also printed in the console */
   }
 }
 
@@ -1483,6 +1517,13 @@ const server = http.createServer(async (req, res) => {
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
+    const url = `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}`;
+    if (process.env.DEEPSEEK_WEB_OPEN_BROWSER === "1") {
+      log("服务已经在运行，打开现有页面：", url);
+      openBrowser(url);
+      setTimeout(() => process.exit(0), 400);
+      return;
+    }
     console.error(`端口 ${PORT} 已被占用。请关闭占用 ${PORT} 的进程，或设置 PORT 后重试。`);
   } else {
     console.error("服务器启动失败：", err);
@@ -1494,13 +1535,15 @@ fs.mkdirSync(WORKSPACE, { recursive: true });
 
 server.listen(PORT, HOST, () => {
   const status = keyStatus();
-  log("DeepSeek Web 已启动:", `http://${HOST}:${PORT}`);
+  const url = `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}`;
+  log("DeepSeek Web 已启动:", url);
   log("模型:", MODEL_CHAT, "/", MODEL_REASONER, "/ agent:", MODEL_AGENT);
   log("API Key:", status.configured ? `已配置（${status.source}，${status.hint}）` : "未配置（演示模式）");
   log("工作区:", WORKSPACE);
   if (HOST !== "127.0.0.1" && HOST !== "localhost") {
     log("警告：服务未绑定回环地址，局域网内其他人可能访问 Agent 文件接口。");
   }
+  openBrowser(url);
 });
 
 process.on("SIGINT", () => {

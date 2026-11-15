@@ -7,19 +7,46 @@
 
   var STORAGE_KEY = "deepseek-web.state.v1";
   var VERSION = 1;
+  var DEFAULT_WALLPAPER = {
+    enabled: false,
+    activeId: "",
+    opacity: 78,
+    blur: 0,
+    brightness: 100,
+    scale: 106,
+    glassBlur: 18,
+    glassOpacity: 62,
+    rotate: false,
+    interval: 60
+  };
   var DEFAULT_SETTINGS = {
     theme: "system",
     deepThink: false,
     webSearch: false,
     mode: "chat",
     sidebarCollapsed: false,
-    bannerDismissed: false
+    bannerDismissed: false,
+    wallpaper: {},
+    wallpapers: []
   };
+
+  function makeDefaultSettings() {
+    return Object.assign({}, DEFAULT_SETTINGS, {
+      wallpaper: Object.assign({}, DEFAULT_WALLPAPER),
+      wallpapers: []
+    });
+  }
 
   var state = {
     conversations: [],
     activeId: null,
-    settings: Object.assign({}, DEFAULT_SETTINGS),
+    settings: makeDefaultSettings(),
+    wallpapers: [],
+    wallpaperTimer: null,
+    wallpaperLayers: [],
+    wallpaperLayerIndex: 0,
+    currentWallpaperId: "",
+    assetDb: null,
     server: {
       online: false,
       checking: true,
@@ -61,6 +88,12 @@
      Utilities
      ============================================================ */
   function pad(n) { return n < 10 ? "0" + n : String(n); }
+
+  function clampNumber(value, min, max, fallback) {
+    var n = Number(value);
+    if (!isFinite(n)) n = fallback;
+    return Math.max(min, Math.min(max, n));
+  }
 
   function fmtClock(ts) {
     if (!ts) return "";
@@ -285,7 +318,28 @@
     var raw = null;
     try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"); } catch (e) { raw = null; }
     if (raw && typeof raw === "object") {
-      state.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings || {});
+      var savedSettings = raw.settings && typeof raw.settings === "object" ? raw.settings : {};
+      state.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+      state.settings.wallpaper = Object.assign({}, DEFAULT_WALLPAPER, savedSettings.wallpaper || {});
+      state.settings.wallpaper.opacity = clampNumber(state.settings.wallpaper.opacity, 20, 100, 78);
+      state.settings.wallpaper.blur = clampNumber(state.settings.wallpaper.blur, 0, 30, 0);
+      state.settings.wallpaper.brightness = clampNumber(state.settings.wallpaper.brightness, 50, 140, 100);
+      state.settings.wallpaper.scale = clampNumber(state.settings.wallpaper.scale, 100, 140, 106);
+      state.settings.wallpaper.glassBlur = clampNumber(state.settings.wallpaper.glassBlur, 0, 30, 18);
+      state.settings.wallpaper.glassOpacity = clampNumber(state.settings.wallpaper.glassOpacity, 20, 95, 62);
+      state.settings.wallpaper.interval = clampNumber(state.settings.wallpaper.interval, 15, 3600, 60);
+      state.settings.wallpaper.enabled = !!state.settings.wallpaper.enabled;
+      state.settings.wallpaper.rotate = !!state.settings.wallpaper.rotate;
+      state.settings.wallpapers = Array.isArray(savedSettings.wallpapers)
+        ? savedSettings.wallpapers.filter(function (w) { return w && typeof w.id === "string" && w.id; }).map(function (w) {
+          return {
+            id: w.id,
+            name: typeof w.name === "string" ? w.name.slice(0, 180) : "壁纸",
+            size: Number(w.size) || 0,
+            addedAt: Number(w.addedAt) || now()
+          };
+        })
+        : [];
       if (["light", "dark", "system"].indexOf(state.settings.theme) === -1) state.settings.theme = "system";
       if (state.settings.mode !== "agent") state.settings.mode = "chat";
       state.conversations = Array.isArray(raw.conversations)
@@ -329,8 +383,323 @@
       }));
     } catch (e) {
       console.warn("save failed", e);
-      toast("本地存储空间不足，附件可能未能保存", "error");
+      toast("本地存储空间不足，附件或壁纸信息可能未能保存", "error");
     }
+  }
+
+  /* ============================================================
+     Wallpapers (unlimited, IndexedDB for image blobs)
+     ============================================================ */
+  var ASSET_DB_NAME = "deepseek-web-assets";
+  var ASSET_STORE = "wallpapers";
+
+  function openAssetDb() {
+    if (state.assetDb) return Promise.resolve(state.assetDb);
+    return new Promise(function (resolve, reject) {
+      if (!window.indexedDB) return reject(new Error("当前浏览器不支持 IndexedDB"));
+      var req = indexedDB.open(ASSET_DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        if (!req.result.objectStoreNames.contains(ASSET_STORE)) req.result.createObjectStore(ASSET_STORE);
+      };
+      req.onsuccess = function () {
+        state.assetDb = req.result;
+        resolve(req.result);
+      };
+      req.onerror = function () { reject(req.error || new Error("无法打开本地图片库")); };
+    });
+  }
+
+  function idbGet(id) {
+    return openAssetDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(ASSET_STORE, "readonly");
+        var req = tx.objectStore(ASSET_STORE).get(id);
+        req.onsuccess = function () { resolve(req.result || null); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+
+  function idbPut(id, blob) {
+    return openAssetDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(ASSET_STORE, "readwrite");
+        tx.objectStore(ASSET_STORE).put(blob, id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error || new Error("写入本地图片库失败")); };
+        tx.onabort = function () { reject(tx.error || new Error("写入本地图片库被中止")); };
+      });
+    });
+  }
+
+  function idbDelete(id) {
+    return openAssetDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(ASSET_STORE, "readwrite");
+        tx.objectStore(ASSET_STORE).delete(id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function currentWallpaper() {
+    var id = state.settings.wallpaper.activeId;
+    return state.wallpapers.find(function (w) { return w.id === id; }) || null;
+  }
+
+  function ensureWallpaperLayers() {
+    if (!els.wallpaperSlides) return;
+    if (state.wallpaperLayers.length === 2 && els.wallpaperSlides.children.length === 2) return;
+    els.wallpaperSlides.innerHTML = '<div class="wallpaper-slide"></div><div class="wallpaper-slide"></div>';
+    state.wallpaperLayers = $$(".wallpaper-slide", els.wallpaperSlides);
+    state.wallpaperLayerIndex = 0;
+    state.currentWallpaperId = "";
+  }
+
+  function updateWallpaperImage(force) {
+    ensureWallpaperLayers();
+    var wp = currentWallpaper();
+    if (!wp) {
+      state.wallpaperLayers.forEach(function (layer) { layer.classList.remove("is-active"); });
+      state.currentWallpaperId = "";
+      return;
+    }
+    if (!force && state.currentWallpaperId === wp.id) return;
+    var targetIndex = 1 - state.wallpaperLayerIndex;
+    var target = state.wallpaperLayers[targetIndex];
+    target.style.backgroundImage = 'url("' + wp.url + '")';
+    // Make sure the new image is decoded before the opacity transition starts.
+    void target.offsetWidth;
+    state.wallpaperLayers.forEach(function (layer, i) {
+      layer.classList.toggle("is-active", i === targetIndex);
+    });
+    state.wallpaperLayerIndex = targetIndex;
+    state.currentWallpaperId = wp.id;
+  }
+
+  function updateWallpaperIndicator() {
+    var wp = state.settings.wallpaper;
+    var hasImages = state.wallpapers.length > 0;
+    var on = hasImages && wp.enabled;
+    if (els.wallpaperBtn) {
+      els.wallpaperBtn.classList.toggle("is-active", on);
+      els.wallpaperBtn.title = on ? "壁纸已启用" : "壁纸与玻璃效果";
+    }
+    if (els.wallpaperCount) {
+      els.wallpaperCount.textContent = state.wallpapers.length + " 张壁纸";
+    }
+    if (els.wallpaperEnabled) {
+      els.wallpaperEnabled.classList.toggle("is-on", on);
+      els.wallpaperEnabled.setAttribute("aria-checked", on ? "true" : "false");
+      var label = els.wallpaperEnabled.querySelector("em");
+      if (label) label.textContent = on ? "已启用" : "启用";
+    }
+    if (els.wallpaperDisable) els.wallpaperDisable.disabled = !hasImages;
+  }
+
+  function applyWallpaper() {
+    var wp = state.settings.wallpaper;
+    var hasImages = state.wallpapers.length > 0;
+    var on = hasImages && wp.enabled;
+    document.body.classList.toggle("has-wallpaper", on);
+    var root = document.documentElement.style;
+    root.setProperty("--wp-opacity", (clampNumber(wp.opacity, 20, 100, 78) / 100).toFixed(2));
+    root.setProperty("--wp-blur", clampNumber(wp.blur, 0, 30, 0) + "px");
+    root.setProperty("--wp-brightness", (clampNumber(wp.brightness, 50, 140, 100) / 100).toFixed(2));
+    root.setProperty("--wp-scale", (clampNumber(wp.scale, 100, 140, 106) / 100).toFixed(2));
+    root.setProperty("--glass-blur", clampNumber(wp.glassBlur, 0, 30, 18) + "px");
+    root.setProperty("--glass-opacity", (clampNumber(wp.glassOpacity, 20, 95, 62) / 100).toFixed(2));
+    updateWallpaperIndicator();
+    if (!on) {
+      state.wallpaperLayers.forEach(function (layer) { layer.classList.remove("is-active"); });
+      state.currentWallpaperId = "";
+      return;
+    }
+    updateWallpaperImage();
+  }
+
+  function syncWallpaperControls() {
+    var wp = state.settings.wallpaper;
+    if (!els.wpOpacity) return;
+    setRangeValue("wpOpacity", wp.opacity, "wpOpacityOut", "%");
+    setRangeValue("wpBlur", wp.blur, "wpBlurOut", "px");
+    setRangeValue("wpBrightness", wp.brightness, "wpBrightnessOut", "%");
+    setRangeValue("wpScale", wp.scale, "wpScaleOut", "%");
+    setRangeValue("glassBlur", wp.glassBlur, "glassBlurOut", "px");
+    setRangeValue("glassOpacity", wp.glassOpacity, "glassOpacityOut", "%");
+    els.wpRotate.checked = !!wp.rotate;
+    els.wpInterval.value = String(wp.interval);
+    updateWallpaperIndicator();
+  }
+
+  function setRangeValue(inputId, value, outputId, suffix) {
+    var input = document.getElementById(inputId);
+    var output = document.getElementById(outputId);
+    if (input) input.value = value;
+    if (output) output.textContent = value + suffix;
+  }
+
+  function renderWallpaperSlots() {
+    if (!els.wallpaperGrid) return;
+    var activeId = state.settings.wallpaper.activeId;
+    var html = state.wallpapers.map(function (w) {
+      var active = w.id === activeId;
+      return '<div class="wallpaper-slot' + (active ? " is-active" : "") + '" data-wallpaper-id="' + escapeAttr(w.id) + '" role="button" tabindex="0" aria-label="使用壁纸 ' + escapeAttr(w.name) + '">' +
+        '<div class="wallpaper-slot-thumb" style="background-image:url(&quot;' + escapeAttr(w.url) + '&quot;)"></div>' +
+        '<div class="wallpaper-slot-shade"></div>' +
+        (active ? '<span class="wallpaper-slot-badge">使用中</span>' : "") +
+        '<span class="wallpaper-slot-name">' + escapeHtml(w.name) + "</span>" +
+        '<div class="wallpaper-slot-actions">' +
+        '<button class="wallpaper-slot-action" type="button" data-wallpaper-remove="' + escapeAttr(w.id) + '" aria-label="删除这张壁纸" title="删除">' + icon("trash") + "</button>" +
+        "</div></div>";
+    }).join("");
+    html += '<button class="wallpaper-add" type="button" data-wallpaper-add>' + icon("upload") + "<span>添加壁纸</span></button>";
+    els.wallpaperGrid.innerHTML = html;
+    updateWallpaperIndicator();
+  }
+
+  async function addWallpapers(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return;
+    var added = [];
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      if (!/^image\//i.test(file.type || "")) {
+        toast("「" + file.name + "」不是图片文件", "error");
+        continue;
+      }
+      if (file.size > 15 * 1024 * 1024) {
+        toast("「" + file.name + "」超过 15 MB，未添加", "error");
+        continue;
+      }
+      var id = uid("wallpaper");
+      try {
+        await idbPut(id, file);
+      } catch (e) {
+        toast("保存壁纸失败：" + (e.message || "本地空间不足"), "error", 5000);
+        continue;
+      }
+      var meta = { id: id, name: file.name || "壁纸", size: file.size, addedAt: now() };
+      state.settings.wallpapers.push(meta);
+      state.wallpapers.push(Object.assign({}, meta, { url: URL.createObjectURL(file) }));
+      added.push(meta);
+    }
+    els.wallpaperInput.value = "";
+    if (!added.length) return;
+    state.settings.wallpaper.activeId = added[added.length - 1].id;
+    state.settings.wallpaper.enabled = true;
+    state.currentWallpaperId = "";
+    renderWallpaperSlots();
+    syncWallpaperControls();
+    applyWallpaper();
+    startWallpaperRotation();
+    scheduleSave();
+    toast("已添加 " + added.length + " 张壁纸", "success");
+  }
+
+  function removeWallpaper(id) {
+    var index = state.wallpapers.findIndex(function (w) { return w.id === id; });
+    if (index === -1) return;
+    var removed = state.wallpapers[index];
+    state.wallpapers.splice(index, 1);
+    state.settings.wallpapers = state.settings.wallpapers.filter(function (w) { return w.id !== id; });
+    if (removed.url) URL.revokeObjectURL(removed.url);
+    idbDelete(id).catch(function () {});
+    if (state.settings.wallpaper.activeId === id) {
+      var next = state.wallpapers[Math.min(index, state.wallpapers.length - 1)];
+      state.settings.wallpaper.activeId = next ? next.id : "";
+      state.currentWallpaperId = "";
+      if (!state.wallpapers.length) state.settings.wallpaper.enabled = false;
+    }
+    renderWallpaperSlots();
+    syncWallpaperControls();
+    applyWallpaper();
+    startWallpaperRotation();
+    scheduleSave();
+    toast("已删除壁纸");
+  }
+
+  function setActiveWallpaper(id) {
+    var wp = state.wallpapers.find(function (w) { return w.id === id; });
+    if (!wp) return;
+    state.settings.wallpaper.activeId = id;
+    state.settings.wallpaper.enabled = true;
+    state.currentWallpaperId = "";
+    renderWallpaperSlots();
+    syncWallpaperControls();
+    applyWallpaper();
+    startWallpaperRotation();
+    scheduleSave();
+  }
+
+  function stopWallpaperRotation() {
+    if (state.wallpaperTimer) {
+      clearInterval(state.wallpaperTimer);
+      state.wallpaperTimer = null;
+    }
+  }
+
+  function startWallpaperRotation() {
+    stopWallpaperRotation();
+    var wp = state.settings.wallpaper;
+    if (!wp.enabled || !wp.rotate || state.wallpapers.length < 2) return;
+    var seconds = clampNumber(wp.interval, 15, 3600, 60);
+    state.wallpaperTimer = setInterval(function () {
+      if (!state.settings.wallpaper.enabled || state.wallpapers.length < 2) return;
+      var currentId = state.settings.wallpaper.activeId;
+      var idx = state.wallpapers.findIndex(function (w) { return w.id === currentId; });
+      var next = state.wallpapers[(idx + 1 + state.wallpapers.length) % state.wallpapers.length];
+      if (!next) return;
+      state.settings.wallpaper.activeId = next.id;
+      state.currentWallpaperId = "";
+      applyWallpaper();
+      renderWallpaperSlots();
+      scheduleSave();
+    }, seconds * 1000);
+  }
+
+  async function initWallpapers() {
+    ensureWallpaperLayers();
+    var metas = Array.isArray(state.settings.wallpapers) ? state.settings.wallpapers : [];
+    var loaded = [];
+    var storageFailed = false;
+    for (var i = 0; i < metas.length; i++) {
+      var meta = metas[i];
+      try {
+        var blob = await idbGet(meta.id);
+        if (blob) {
+          loaded.push({
+            id: meta.id,
+            name: meta.name || "壁纸",
+            size: meta.size || blob.size || 0,
+            addedAt: meta.addedAt || now(),
+            url: URL.createObjectURL(blob)
+          });
+        }
+      } catch (e) {
+        storageFailed = true;
+      }
+    }
+    state.wallpapers = loaded;
+    state.settings.wallpapers = loaded.map(function (w) {
+      return { id: w.id, name: w.name, size: w.size, addedAt: w.addedAt };
+    });
+    var wp = state.settings.wallpaper;
+    if (!loaded.length) {
+      wp.enabled = false;
+      wp.activeId = "";
+    } else if (!loaded.some(function (w) { return w.id === wp.activeId; })) {
+      wp.activeId = loaded[0].id;
+    }
+    if (storageFailed && !loaded.length && metas.length) {
+      toast("无法读取本地壁纸库，壁纸可能已被浏览器清理", "error", 5000);
+    }
+    renderWallpaperSlots();
+    syncWallpaperControls();
+    applyWallpaper();
+    startWallpaperRotation();
+    scheduleSave();
   }
 
   /* ============================================================
@@ -2218,16 +2587,22 @@
   /* ============================================================
      Settings / dialogs
      ============================================================ */
-  function openSettings() {
+  function openSettings(section) {
     closeContextMenu();
     refreshServerStatus({ quiet: true });
     if (!els.settingsDialog.open) {
       els.settingsDialog.showModal();
       document.body.classList.add("dialog-open");
-      setTimeout(function () {
-        if (!state.server.key.configured) els.apiKeyInput.focus();
-      }, 80);
     }
+    setTimeout(function () {
+      if (section === "wallpaper" && els.wallpaperSection) {
+        renderWallpaperSlots();
+        syncWallpaperControls();
+        els.wallpaperSection.scrollIntoView({ block: "start", behavior: "smooth" });
+        return;
+      }
+      if (!state.server.key.configured) els.apiKeyInput.focus();
+    }, 80);
   }
 
   function closeDialog(dialog) {
@@ -2456,9 +2831,88 @@
       applyTheme();
       scheduleSave();
     });
+    els.wallpaperBtn.addEventListener("click", function () { openSettings("wallpaper"); });
     els.exportBtn.addEventListener("click", function () { exportConversation(); });
     els.topSettingsBtn.addEventListener("click", openSettings);
     els.connectionChip.addEventListener("click", openSettings);
+
+    /* Wallpapers */
+    els.wallpaperInput.addEventListener("change", function () { addWallpapers(els.wallpaperInput.files); });
+    els.wallpaperGrid.addEventListener("click", function (e) {
+      if (e.target.closest("[data-wallpaper-add]")) {
+        els.wallpaperInput.click();
+        return;
+      }
+      var remove = e.target.closest("[data-wallpaper-remove]");
+      if (remove) {
+        e.stopPropagation();
+        removeWallpaper(remove.dataset.wallpaperRemove);
+        return;
+      }
+      var slot = e.target.closest("[data-wallpaper-id]");
+      if (slot) setActiveWallpaper(slot.dataset.wallpaperId);
+    });
+    els.wallpaperGrid.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target.closest("[data-wallpaper-remove]")) return;
+      var slot = e.target.closest("[data-wallpaper-id]");
+      if (slot) {
+        e.preventDefault();
+        setActiveWallpaper(slot.dataset.wallpaperId);
+      }
+    });
+    els.wallpaperEnabled.addEventListener("click", function () {
+      if (!state.wallpapers.length) {
+        toast("先添加一张壁纸", "error");
+        els.wallpaperInput.click();
+        return;
+      }
+      var wp = state.settings.wallpaper;
+      wp.enabled = !wp.enabled;
+      if (wp.enabled && !wp.activeId) wp.activeId = state.wallpapers[0].id;
+      state.currentWallpaperId = "";
+      applyWallpaper();
+      startWallpaperRotation();
+      scheduleSave();
+      toast(wp.enabled ? "已启用壁纸与玻璃面板" : "已关闭壁纸");
+    });
+    els.wallpaperDisable.addEventListener("click", function () {
+      state.settings.wallpaper.enabled = false;
+      state.currentWallpaperId = "";
+      applyWallpaper();
+      stopWallpaperRotation();
+      scheduleSave();
+      toast("已关闭壁纸");
+    });
+    els.wpRotate.addEventListener("change", function () {
+      state.settings.wallpaper.rotate = els.wpRotate.checked;
+      startWallpaperRotation();
+      scheduleSave();
+    });
+    els.wpInterval.addEventListener("change", function () {
+      state.settings.wallpaper.interval = clampNumber(els.wpInterval.value, 15, 3600, 60);
+      startWallpaperRotation();
+      scheduleSave();
+    });
+    [
+      ["wpOpacity", "opacity", "wpOpacityOut", "%"],
+      ["wpBlur", "blur", "wpBlurOut", "px"],
+      ["wpBrightness", "brightness", "wpBrightnessOut", "%"],
+      ["wpScale", "scale", "wpScaleOut", "%"],
+      ["glassBlur", "glassBlur", "glassBlurOut", "px"],
+      ["glassOpacity", "glassOpacity", "glassOpacityOut", "%"]
+    ].forEach(function (def) {
+      var input = document.getElementById(def[0]);
+      var output = document.getElementById(def[2]);
+      if (!input) return;
+      input.addEventListener("input", function () {
+        var value = Number(input.value);
+        state.settings.wallpaper[def[1]] = value;
+        if (output) output.textContent = value + def[3];
+        applyWallpaper();
+        scheduleSave();
+      });
+    });
 
     /* Demo banner */
     els.demoBannerAction.addEventListener("click", openSettings);
@@ -2706,6 +3160,29 @@
     els.connectionChip = $("#connectionChip");
     els.connectionText = $("#connectionText");
     els.themeToggle = $("#themeToggle");
+    els.wallpaperBtn = $("#wallpaperBtn");
+    els.wallpaperLayer = $("#wallpaperLayer");
+    els.wallpaperSlides = $("#wallpaperSlides");
+    els.wallpaperGrid = $("#wallpaperGrid");
+    els.wallpaperInput = $("#wallpaperInput");
+    els.wallpaperSection = $("#wallpaperSection");
+    els.wallpaperEnabled = $("#wallpaperEnabled");
+    els.wallpaperCount = $("#wallpaperCount");
+    els.wallpaperDisable = $("#wallpaperDisable");
+    els.wpRotate = $("#wpRotate");
+    els.wpInterval = $("#wpInterval");
+    els.wpOpacity = $("#wpOpacity");
+    els.wpOpacityOut = $("#wpOpacityOut");
+    els.wpBlur = $("#wpBlur");
+    els.wpBlurOut = $("#wpBlurOut");
+    els.wpBrightness = $("#wpBrightness");
+    els.wpBrightnessOut = $("#wpBrightnessOut");
+    els.wpScale = $("#wpScale");
+    els.wpScaleOut = $("#wpScaleOut");
+    els.glassBlur = $("#glassBlur");
+    els.glassBlurOut = $("#glassBlurOut");
+    els.glassOpacity = $("#glassOpacity");
+    els.glassOpacityOut = $("#glassOpacityOut");
     els.exportBtn = $("#exportBtn");
     els.topSettingsBtn = $("#topSettingsBtn");
     els.demoBanner = $("#demoBanner");
@@ -2761,6 +3238,10 @@
     syncSidebarCollapse();
     syncComposerFromActive();
     updateModeUI();
+    ensureWallpaperLayers();
+    syncWallpaperControls();
+    renderWallpaperSlots();
+    initWallpapers();
     renderSidebar();
     renderChat({ forceBottom: true });
     updateConnectionUI();

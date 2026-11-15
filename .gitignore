@@ -1,4 +1,8 @@
-# Local-only secrets and runtime state
+# Build output and local-only secrets
+build/
+dist/
+.wp*.jpg
+scenario-*.png
 secrets.json
 secrets.json.tmp
 agent-workspace/*

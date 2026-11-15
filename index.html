@@ -11,6 +11,10 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="wallpaper-layer" id="wallpaperLayer" aria-hidden="true">
+    <div class="wallpaper-slides" id="wallpaperSlides"></div>
+    <div class="wallpaper-veil"></div>
+  </div>
   <a class="skip-link" href="#composerInput">跳到输入框</a>
 
   <svg class="svg-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -21,6 +25,9 @@
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.09A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.09A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.04V3h4v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.96 10H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.4 14.4A8.7 8.7 0 0 1 9.6 3.6 8.8 8.8 0 1 0 20.4 14.4Z"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8.5" cy="9" r="1.5"/><path d="m4 17 5-5 4 4 3-2 4 4"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h6M14 6h6M4 12h11M19 12h1M4 18h3M11 18h9"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></symbol>
     <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
     <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
     <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
@@ -130,6 +137,9 @@
           <button class="connection-chip" id="connectionChip" type="button" aria-label="查看模型服务状态">
             <span class="connection-dot"></span>
             <span id="connectionText">检测中</span>
+          </button>
+          <button class="icon-btn" id="wallpaperBtn" type="button" aria-label="壁纸与玻璃效果" title="壁纸与玻璃效果">
+            <svg><use href="#i-image"/></svg>
           </button>
           <button class="icon-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换主题">
             <svg><use href="#i-moon"/></svg>
@@ -301,6 +311,76 @@
             <span><svg><use href="#i-monitor"/></svg>跟随系统</span>
           </button>
         </div>
+      </section>
+
+      <section class="settings-section wallpaper-settings" id="wallpaperSection">
+        <div class="settings-section-head">
+          <div>
+            <h3>壁纸与玻璃</h3>
+            <p>壁纸数量不限，只在当前浏览器本地保存，不会上传到服务器。</p>
+          </div>
+          <button class="switch" id="wallpaperEnabled" type="button" role="switch" aria-checked="false">
+            <span class="switch-track"><i></i></span><em>关闭</em>
+          </button>
+        </div>
+
+        <div class="wallpaper-grid" id="wallpaperGrid"></div>
+        <input id="wallpaperInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+
+        <div class="wallpaper-controls">
+          <div class="wallpaper-control-group">
+            <div class="control-group-title"><svg><use href="#i-image"/></svg>壁纸调节</div>
+            <label class="range-row">
+              <span>浓度</span>
+              <input id="wpOpacity" type="range" min="20" max="100" step="1" value="78">
+              <output id="wpOpacityOut">78%</output>
+            </label>
+            <label class="range-row">
+              <span>模糊</span>
+              <input id="wpBlur" type="range" min="0" max="30" step="1" value="0">
+              <output id="wpBlurOut">0px</output>
+            </label>
+            <label class="range-row">
+              <span>明暗</span>
+              <input id="wpBrightness" type="range" min="50" max="140" step="1" value="100">
+              <output id="wpBrightnessOut">100%</output>
+            </label>
+            <label class="range-row">
+              <span>缩放</span>
+              <input id="wpScale" type="range" min="100" max="140" step="1" value="106">
+              <output id="wpScaleOut">106%</output>
+            </label>
+          </div>
+
+          <div class="wallpaper-control-group">
+            <div class="control-group-title"><svg><use href="#i-sliders"/></svg>玻璃面板</div>
+            <label class="range-row">
+              <span>模糊</span>
+              <input id="glassBlur" type="range" min="0" max="30" step="1" value="18">
+              <output id="glassBlurOut">18px</output>
+            </label>
+            <label class="range-row">
+              <span>不透明度</span>
+              <input id="glassOpacity" type="range" min="20" max="95" step="1" value="62">
+              <output id="glassOpacityOut">62%</output>
+            </label>
+          </div>
+        </div>
+
+        <div class="wallpaper-rotation">
+          <span class="wallpaper-count" id="wallpaperCount">0 张壁纸</span>
+          <label class="check-line" for="wpRotate">
+            <input id="wpRotate" type="checkbox">
+            <span>自动轮播</span>
+          </label>
+          <select id="wpInterval" aria-label="轮播间隔">
+            <option value="30">30 秒</option>
+            <option value="60" selected>1 分钟</option>
+            <option value="300">5 分钟</option>
+          </select>
+          <button class="btn btn-ghost btn-small" id="wallpaperDisable" type="button">关闭壁纸</button>
+        </div>
+        <p class="settings-hint">建议使用横向图片（16:9 或更宽）。壁纸与调节参数保存在本机；清空浏览器站点数据会一并删除。</p>
       </section>
 
       <section class="settings-section">
