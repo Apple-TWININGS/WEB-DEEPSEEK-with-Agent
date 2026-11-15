@@ -34,7 +34,7 @@ const DEFAULT_WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.2.3";
+const VERSION = "1.2.4";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -60,7 +60,7 @@ const MAX_AGENT_ROUNDS = 15;
 const MAX_TOOL_CALLS_PER_ROUND = 4;
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_FILE_BYTES = 24 * 1024 * 1024;
-const MAX_WRITE_BYTES = 500 * 1024;
+const MAX_WRITE_BYTES = 2 * 1024 * 1024;
 const READ_DEFAULT_CHARS = 50000;
 const READ_MAX_CHARS = 200000;
 const SEARCH_TTL_MS = 5 * 60 * 1000;
@@ -1332,7 +1332,7 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "write_file",
-      description: "在当前工作区内创建、覆盖或追加一个文本文件。单次 content 硬上限 500 KB，建议每次 12–24 KB 分块；文件上限 24 MB。大文件用 append=true 追加。正式写入前系统会展示 diff 并等待用户确认；dry_run=true 只预演。修改已有文件会自动备份 .bak（上一代 .bak.1）。",
+      description: "在当前工作区内创建、覆盖或追加一个文本文件。单次 content 硬上限 2 MB；文件上限 24 MB。大文件用 append=true 追加。正式写入前系统会展示 diff 并等待用户确认；dry_run=true 只预演。修改已有文件会自动备份 .bak（上一代 .bak.1）。",
       parameters: {
         type: "object",
         properties: {
@@ -1440,8 +1440,8 @@ async function executeAgentTool(name, args, ctx) {
     if (Buffer.byteLength(content, "utf8") > MAX_WRITE_BYTES) {
       return {
         ok: false,
-        summary: `单次内容超过 ${MAX_WRITE_BYTES / 1024} KB。`,
-        modelText: `错误：单次 content 超过 ${MAX_WRITE_BYTES / 1024} KB。请用 append=true 分块写入（建议每块 12–24 KB），或拆成多个文件。`,
+        summary: `单次内容超过 ${MAX_WRITE_BYTES / 1024 / 1024} MB。`,
+        modelText: `错误：单次 content 超过 ${MAX_WRITE_BYTES / 1024 / 1024} MB。请用 append=true 分块写入，或拆成多个文件。`,
       };
     }
     const { rel, abs } = workspacePath(args.path, run.workspace);
@@ -1542,7 +1542,7 @@ function agentSystemPrompt(workspace = WORKSPACE) {
     "5. 用 task_plan 维护任务状态，尤其是步骤较多的任务。每完成一个阶段就更新一次。",
     "6. 不要请求执行 shell，不要读取工作区之外的路径，不要输出或猜测 API Key。",
     "7. 如果用户拒绝写入，明确说明文件未改动，并根据反馈调整。",
-    "8. 写文档可以一次写较长的内容，但单次 content 硬上限是 500 KB；建议每次控制在 12–24 KB，超长内容用 append=true 分块，文件上限 24 MB。读大文件用 read_file 的 offset/limit 继续读。一次写不完就分多次 append，不要反复原样重试。",
+    "8. 写文档可以一次写较长的内容，单次 content 硬上限是 2 MB；超长内容用 append=true 分块，文件上限 24 MB。读大文件用 read_file 的 offset/limit 继续读。一次写不完就分多次 append，不要反复原样重试。",
     "9. 多文件任务先用 task_plan 落一份清单，每完成一项更新进度；轮次有限（15 轮），不要把预算浪费在重复读同一个文件上。",
     "10. list_files 默认递归三层；如果文件在项目子目录，用 path 指定目录查看。不要因为根目录只看到文件夹就断言文件不存在；写完产出后要用 read_file 或 list_files 再确认。",
     "11. 能力边界：可以写文本/Markdown/ASCII 图/代码、读写文件、搜索网页；不能生成真实位图、CAD 二进制、视频或施工级图纸。遇到这类请求，先说明能做/不能做/替代方案，再问最多 3 个关键问题，其余参数给默认值。",
