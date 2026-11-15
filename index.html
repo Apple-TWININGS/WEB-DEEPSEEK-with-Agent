@@ -483,11 +483,37 @@
       <section class="settings-section about-section">
         <div class="about-brand">
           <span class="brand-mark small"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
-          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.4</small></div>
+          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.5</small></div>
         </div>
         <p>界面与 Agent 工程参考 <em>Professional Agent</em> 的工具循环、diff 审批、备份恢复与密钥管理设计。聊天是默认入口，Agent 只在需要时出现。</p>
         <div class="about-badges"><span>Chat first</span><span>Local-first</span><span>Human in the loop</span></div>
       </section>
+    </div>
+  </dialog>
+
+  <dialog class="dialog artifact-preview-dialog" id="artifactPreviewDialog" aria-labelledby="artifactPreviewTitle">
+    <div class="dialog-head">
+      <div>
+        <p class="dialog-kicker">AGENT · PREVIEW</p>
+        <h2 id="artifactPreviewTitle">文件预览</h2>
+      </div>
+      <button class="icon-btn dialog-close" type="button" data-close-dialog="artifactPreviewDialog" aria-label="关闭">
+        <svg><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="artifact-preview-meta">
+      <span class="artifact-preview-icon"><svg><use href="#i-file"/></svg></span>
+      <div>
+        <strong id="artifactPreviewName">文件</strong>
+        <code id="artifactPreviewPath"></code>
+      </div>
+      <span class="artifact-preview-size" id="artifactPreviewSize"></span>
+    </div>
+    <div class="artifact-preview-body" id="artifactPreviewBody"></div>
+    <div class="dialog-actions artifact-preview-actions">
+      <button class="btn btn-ghost" type="button" data-close-dialog="artifactPreviewDialog">关闭</button>
+      <button class="btn btn-ghost" id="artifactRevealBtn" type="button"><svg><use href="#i-folder"/></svg>打开所在文件夹</button>
+      <button class="btn btn-primary" id="artifactDownloadBtn" type="button"><svg><use href="#i-download"/></svg>下载文件</button>
     </div>
   </dialog>
 

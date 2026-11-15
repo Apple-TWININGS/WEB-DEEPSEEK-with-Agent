@@ -34,7 +34,7 @@ const DEFAULT_WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.2.4";
+const VERSION = "1.2.5";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -1013,7 +1013,7 @@ function workspacePath(rel, workspace = WORKSPACE) {
 function allowedExtension(rel) {
   const ext = path.extname(rel).toLowerCase();
   return new Set([
-    ".md", ".markdown", ".txt", ".json", ".csv", ".html", ".css",
+    ".md", ".markdown", ".txt", ".json", ".csv", ".html", ".css", ".svg",
     ".js", ".mjs", ".ts", ".tsx", ".jsx", ".py", ".yml", ".yaml", ".xml", ".sql",
   ]).has(ext);
 }
@@ -1202,6 +1202,9 @@ function validateFileContent(rel, content) {
   }
   if (ext === ".html" && /<script[^>]*src=["']https?:/i.test(content)) {
     return "HTML 里引用了外部脚本。出于安全考虑，Agent 只写入自包含文件。";
+  }
+  if (ext === ".svg" && /<script|foreignObject|javascript:|\son\w+\s*=/i.test(content)) {
+    return "SVG 含脚本或事件处理器。出于安全考虑，只允许纯静态矢量图。";
   }
   return "";
 }
@@ -1446,7 +1449,7 @@ async function executeAgentTool(name, args, ctx) {
     }
     const { rel, abs } = workspacePath(args.path, run.workspace);
     if (!allowedExtension(rel)) {
-      return { ok: false, summary: "不支持的文件类型。", modelText: "错误：只允许写入文本类文件（.md/.txt/.json/.csv/.html/.css/.js/.ts/.py/.yml/.xml/.sql）。" };
+      return { ok: false, summary: "不支持的文件类型。", modelText: "错误：只允许写入文本类文件（.md/.txt/.json/.csv/.html/.css/.svg/.js/.ts/.py/.yml/.xml/.sql）。" };
     }
     let oldText = "";
     let isNew = true;
@@ -1545,7 +1548,7 @@ function agentSystemPrompt(workspace = WORKSPACE) {
     "8. 写文档可以一次写较长的内容，单次 content 硬上限是 2 MB；超长内容用 append=true 分块，文件上限 24 MB。读大文件用 read_file 的 offset/limit 继续读。一次写不完就分多次 append，不要反复原样重试。",
     "9. 多文件任务先用 task_plan 落一份清单，每完成一项更新进度；轮次有限（15 轮），不要把预算浪费在重复读同一个文件上。",
     "10. list_files 默认递归三层；如果文件在项目子目录，用 path 指定目录查看。不要因为根目录只看到文件夹就断言文件不存在；写完产出后要用 read_file 或 list_files 再确认。",
-    "11. 能力边界：可以写文本/Markdown/ASCII 图/代码、读写文件、搜索网页；不能生成真实位图、CAD 二进制、视频或施工级图纸。遇到这类请求，先说明能做/不能做/替代方案，再问最多 3 个关键问题，其余参数给默认值。",
+    "11. 能力边界：可以写文本/Markdown/ASCII 图/代码、生成 SVG 矢量示意图（平面草图、流程图、架构图）、读写文件、搜索网页；不能生成照片级位图、CAD 二进制、视频或施工级图纸。遇到画图请求时，不要直接说做不到，先提出用 SVG 示意图替代；再问最多 3 个关键问题，其余参数给默认值。",
     "12. 最终用中文 Markdown 总结：完成了什么、产出文件在哪里、下一步建议。未完成的步骤必须明确列出，不要只写「已完成」。",
     "",
     "当前时间：" + new Date().toLocaleString("zh-CN", { hour12: false }),
@@ -2126,6 +2129,43 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname.startsWith("/api/files/")) {
       return await serveWorkspaceFile(res, url.pathname, url.searchParams);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/reveal") {
+      const body = await readJson(req, 64 * 1024);
+      let workspace;
+      try {
+        workspace = body.workspace ? validateWorkspaceTarget(body.workspace) : WORKSPACE;
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message });
+      }
+      let info;
+      try {
+        info = workspacePath(body.path, workspace);
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message });
+      }
+      if (info.rel.startsWith(".") || info.rel.includes("/.") || /\.bak(\.\d+)?$/i.test(info.rel)) {
+        return sendJson(res, 404, { error: "文件不存在。" });
+      }
+      try {
+        const stat = await fsp.stat(info.abs);
+        if (!stat.isFile()) return sendJson(res, 404, { error: "文件不存在。" });
+      } catch {
+        return sendJson(res, 404, { error: "文件不存在。" });
+      }
+      try {
+        if (process.platform === "win32") {
+          spawn("explorer.exe", ["/select,", info.abs], { detached: true, stdio: "ignore" }).unref();
+        } else if (process.platform === "darwin") {
+          spawn("open", ["-R", info.abs], { detached: true, stdio: "ignore" }).unref();
+        } else {
+          spawn("xdg-open", [path.dirname(info.abs)], { detached: true, stdio: "ignore" }).unref();
+        }
+        return sendJson(res, 200, { ok: true });
+      } catch (err) {
+        return sendJson(res, 500, { error: "无法打开文件夹：" + err.message });
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/favicon.ico") {

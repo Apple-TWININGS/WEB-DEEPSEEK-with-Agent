@@ -74,6 +74,8 @@
     lan: { lan: false, url: "", addresses: [], authRequired: false },
     workspace: { path: "", defaultPath: "", exists: false },
     workspaceBrowsePath: "",
+    previewArtifact: null,
+    previewObjectUrl: null,
     fullAccess: { active: false, expiresAt: 0 },
     fullAccessTimer: null
   };
@@ -1819,11 +1821,8 @@
     if (!list.length) return "";
     return '<div class="artifacts">' + list.map(function (a, i) {
       var inner = '<span class="artifact-icon">' + icon("file") + "</span>" +
-        '<span class="artifact-copy"><strong>' + escapeHtml(a.name || "产出文件") + "</strong><small>" + (a.size ? fmtSize(a.size) : "Markdown 文档") + "</small></span>" + icon("download");
-      if (a.url) {
-        return '<a class="artifact-card" href="' + escapeAttr(a.url) + '" download="' + escapeAttr(a.name || "download") + '">' + inner + "</a>";
-      }
-      return '<button class="artifact-card" type="button" data-action="download-artifact" data-artifact-index="' + i + '">' + inner + "</button>";
+        '<span class="artifact-copy"><strong>' + escapeHtml(a.name || "产出文件") + "</strong><small>" + (a.size ? fmtSize(a.size) : "Markdown 文档") + "</small></span>" + icon("eye");
+      return '<button class="artifact-card" type="button" data-action="preview-artifact" data-artifact-index="' + i + '" title="预览文件">' + inner + "</button>";
     }).join("") + "</div>";
   }
 
@@ -3229,16 +3228,118 @@
     toast(msg.feedback ? "感谢反馈" : "已取消反馈");
   }
 
-  function downloadDemoArtifact(msgId, index) {
+  function artifactWorkspace(artifact) {
+    try {
+      var ws = new URL(artifact.url, location.origin).searchParams.get("ws");
+      return ws || state.workspace.path || "";
+    } catch (e) {
+      return state.workspace.path || "";
+    }
+  }
+
+  function renderArtifactPreview(name, text) {
+    var ext = String(name || "").split(".").pop().toLowerCase();
+    if (ext === "svg") {
+      if (state.previewObjectUrl) URL.revokeObjectURL(state.previewObjectUrl);
+      var blob = new Blob([text], { type: "image/svg+xml;charset=utf-8" });
+      state.previewObjectUrl = URL.createObjectURL(blob);
+      els.artifactPreviewBody.innerHTML = '<div class="artifact-preview-image"><img alt="SVG 预览"></div>';
+      els.artifactPreviewBody.querySelector("img").src = state.previewObjectUrl;
+      return;
+    }
+    if (ext === "md" || ext === "markdown") {
+      els.artifactPreviewBody.innerHTML = '<div class="md-body">' + window.DSMarkdown.render(text) + "</div>";
+      return;
+    }
+    els.artifactPreviewBody.innerHTML = '<pre><code></code></pre>';
+    els.artifactPreviewBody.querySelector("code").textContent = text;
+  }
+
+  async function openArtifactPreview(msgId, index) {
     var conv = activeConversation();
     var msg = conv.messages.find(function (m) { return m.id === msgId; });
     var artifact = msg && msg.agent && msg.agent.artifacts && msg.agent.artifacts[index];
-    if (!artifact || !artifact.demoContent) {
+    if (!artifact) return;
+    state.previewArtifact = artifact;
+    els.artifactPreviewName.textContent = artifact.name || "文件";
+    els.artifactPreviewTitle.textContent = artifact.name || "文件预览";
+    els.artifactPreviewPath.textContent = artifact.path || "演示模式 · 仅浏览器内";
+    els.artifactPreviewSize.textContent = artifact.size ? fmtSize(artifact.size) : "";
+    els.artifactPreviewBody.innerHTML = '<div class="artifact-preview-empty">读取中…</div>';
+    els.artifactRevealBtn.hidden = !artifact.path;
+    if (!els.artifactPreviewDialog.open) {
+      els.artifactPreviewDialog.showModal();
+      document.body.classList.add("dialog-open");
+    }
+    try {
+      var text = artifact.demoContent || "";
+      if (!text && artifact.url) {
+        var res = await fetch(artifact.url, { cache: "no-store" });
+        if (res.status === 401) {
+          showLoginScreen();
+          closeDialog(els.artifactPreviewDialog);
+          return;
+        }
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        text = await res.text();
+      }
+      if (!text) throw new Error("文件内容为空");
+      if (text.length > 400000) {
+        text = text.slice(0, 400000) + "\n\n…（预览已截断，下载可查看完整文件）";
+      }
+      renderArtifactPreview(artifact.name, text);
+    } catch (e) {
+      els.artifactPreviewBody.innerHTML = '<div class="artifact-preview-empty">无法预览：' + escapeHtml(friendlyError(e)) + "</div>";
+    }
+  }
+
+  function closeArtifactPreview() {
+    if (state.previewObjectUrl) {
+      URL.revokeObjectURL(state.previewObjectUrl);
+      state.previewObjectUrl = null;
+    }
+    if (els.artifactPreviewDialog && els.artifactPreviewDialog.open) closeDialog(els.artifactPreviewDialog);
+  }
+
+  function downloadArtifact(artifact) {
+    if (!artifact) return;
+    if (artifact.demoContent) {
+      downloadFile(artifact.name || "deepseek-agent-output.md", artifact.demoContent, "text/markdown;charset=utf-8");
+    } else if (artifact.url) {
+      var a = document.createElement("a");
+      a.href = artifact.url;
+      a.download = artifact.name || "download";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } else {
       toast("这个文件没有可下载的内容", "error");
       return;
     }
-    downloadFile(artifact.name || "deepseek-agent-output.md", artifact.demoContent, "text/markdown;charset=utf-8");
     toast("已下载 " + (artifact.name || "文件"), "success");
+  }
+
+  async function revealArtifact(artifact) {
+    if (!artifact || !artifact.path) {
+      toast("演示文件没有磁盘路径", "error");
+      return;
+    }
+    try {
+      var res = await fetch("/api/reveal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: artifact.path, workspace: artifactWorkspace(artifact) })
+      });
+      if (res.status === 401) {
+        showLoginScreen();
+        return;
+      }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || "无法打开文件夹");
+      toast("已在电脑上打开所在文件夹", "success");
+    } catch (e) {
+      toast("打开文件夹失败：" + friendlyError(e), "error", 5000);
+    }
   }
 
   /* ============================================================
@@ -3505,6 +3606,14 @@
     els.workspaceDialog.addEventListener("click", function (e) {
       if (e.target === els.workspaceDialog) closeWorkspaceDialog();
     });
+    els.artifactDownloadBtn.addEventListener("click", function () { downloadArtifact(state.previewArtifact); });
+    els.artifactRevealBtn.addEventListener("click", function () { revealArtifact(state.previewArtifact); });
+    els.artifactPreviewDialog.addEventListener("close", function () {
+      if (state.previewObjectUrl) {
+        URL.revokeObjectURL(state.previewObjectUrl);
+        state.previewObjectUrl = null;
+      }
+    });
     els.fullAccessSettingsBtn.addEventListener("click", openFullAccessDialog);
     els.agentAccessBtn.addEventListener("click", openFullAccessDialog);
     els.fullAccessAck.addEventListener("change", function () {
@@ -3713,7 +3822,7 @@
       else if (action === "regenerate") regenerateMessage(msgId);
       else if (action === "feedback-up") setFeedback(msgId, "up");
       else if (action === "feedback-down") setFeedback(msgId, "down");
-      else if (action === "download-artifact") downloadDemoArtifact(msgId, Number(actionBtn.dataset.artifactIndex));
+      else if (action === "preview-artifact") openArtifactPreview(msgId, Number(actionBtn.dataset.artifactIndex));
       else if (action === "toggle-trace") {
         var conv = activeConversation();
         var msg = conv.messages.find(function (m) { return m.id === msgId; });
@@ -3871,6 +3980,14 @@
     els.lanHint = $("#lanHint");
     els.copyLanUrl = $("#copyLanUrl");
     els.logoutBtn = $("#logoutBtn");
+    els.artifactPreviewDialog = $("#artifactPreviewDialog");
+    els.artifactPreviewTitle = $("#artifactPreviewTitle");
+    els.artifactPreviewName = $("#artifactPreviewName");
+    els.artifactPreviewPath = $("#artifactPreviewPath");
+    els.artifactPreviewSize = $("#artifactPreviewSize");
+    els.artifactPreviewBody = $("#artifactPreviewBody");
+    els.artifactDownloadBtn = $("#artifactDownloadBtn");
+    els.artifactRevealBtn = $("#artifactRevealBtn");
     els.workspaceDialog = $("#workspaceDialog");
     els.workspaceUp = $("#workspaceUp");
     els.workspaceBrowsePath = $("#workspaceBrowsePath");
