@@ -34,7 +34,7 @@ const DEFAULT_WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.2.1";
+const VERSION = "1.2.2";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -994,19 +994,20 @@ function friendlyModelError(err) {
 /* ============================================================
    Agent workspace + tools
    ============================================================ */
-function workspacePath(rel) {
+function workspacePath(rel, workspace = WORKSPACE) {
   const raw = String(rel || "").trim().replace(/\\/g, "/");
   if (!raw) throw new Error("缺少相对路径。");
   if (raw.startsWith("/") || /^[A-Za-z]:/.test(raw) || raw.includes("\u0000")) {
-    throw new Error("只允许 agent-workspace 内的相对路径。");
+    throw new Error("只允许当前工作区内的相对路径。");
   }
   const parts = raw.split("/");
   if (parts.some((p) => p === ".." || p === "")) throw new Error("路径包含非法片段。");
-  const abs = path.resolve(WORKSPACE, raw);
-  if (abs !== WORKSPACE && !abs.startsWith(WORKSPACE + path.sep)) {
-    throw new Error("路径越出了 agent-workspace。");
+  const root = path.resolve(workspace || WORKSPACE);
+  const abs = path.resolve(root, raw);
+  if (abs !== root && !abs.startsWith(root + path.sep)) {
+    throw new Error("路径越出了当前工作区。");
   }
-  return { rel: path.relative(WORKSPACE, abs).replace(/\\/g, "/"), abs };
+  return { rel: path.relative(root, abs).replace(/\\/g, "/"), abs };
 }
 
 function allowedExtension(rel) {
@@ -1017,8 +1018,8 @@ function allowedExtension(rel) {
   ]).has(ext);
 }
 
-async function readWorkspaceText(rel, maxChars = READ_DEFAULT_CHARS, offset = 0) {
-  const { rel: clean, abs } = workspacePath(rel);
+async function readWorkspaceText(rel, maxChars = READ_DEFAULT_CHARS, offset = 0, workspace = WORKSPACE) {
+  const { rel: clean, abs } = workspacePath(rel, workspace);
   const st = await fsp.stat(abs);
   if (!st.isFile()) throw new Error("不是文件：" + clean);
   if (st.size > MAX_FILE_BYTES) {
@@ -1055,18 +1056,48 @@ function clampInteger(value, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-async function listWorkspace() {
-  await fsp.mkdir(WORKSPACE, { recursive: true });
-  const entries = await fsp.readdir(WORKSPACE, { withFileTypes: true });
-  return entries
-    .filter((e) => !e.name.startsWith(".") && e.name !== "node_modules")
-    .slice(0, 100)
-    .map((e) => {
-      const abs = path.join(WORKSPACE, e.name);
-      let size = 0;
-      try { size = fs.statSync(abs).size; } catch { /* ignore */ }
-      return { name: e.name + (e.isDirectory() ? "/" : ""), dir: e.isDirectory(), size };
-    });
+async function listWorkspace(rel = "", depth = 3, workspace = WORKSPACE) {
+  const base = path.resolve(workspace || WORKSPACE);
+  let root = base;
+  if (rel) {
+    const target = workspacePath(rel, base);
+    root = target.abs;
+  }
+  await fsp.mkdir(base, { recursive: true });
+  const stat = await fsp.stat(root);
+  if (!stat.isDirectory()) throw new Error("不是文件夹：" + (rel || "工作区根目录"));
+  const maxDepth = clampInteger(depth, 1, 3, 3);
+  const entries = [];
+  let truncated = false;
+
+  async function walk(dir, level) {
+    if (entries.length >= 200) {
+      truncated = true;
+      return;
+    }
+    const items = await fsp.readdir(dir, { withFileTypes: true });
+    items.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name, "zh-CN"));
+    for (const item of items) {
+      if (item.name.startsWith(".") || item.name === "node_modules") continue;
+      const abs = path.join(dir, item.name);
+      const relPath = path.relative(base, abs).replace(/\\/g, "/");
+      if (item.isDirectory()) {
+        entries.push({ name: relPath + "/", dir: true, size: 0 });
+        if (level < maxDepth) await walk(abs, level + 1);
+      } else {
+        let size = 0;
+        try { size = fs.statSync(abs).size; } catch { /* ignore */ }
+        entries.push({ name: relPath, dir: false, size });
+      }
+      if (entries.length >= 200) {
+        truncated = true;
+        break;
+      }
+    }
+  }
+
+  await walk(root, 1);
+  return { entries, truncated, root: rel || "" };
 }
 
 function diffLines(oldText, newText, rel) {
@@ -1196,12 +1227,13 @@ async function backupFile(abs) {
   return true;
 }
 
-function artifactFor(rel, size) {
+function artifactFor(rel, size, workspace) {
+  const base = "/api/files/" + rel.split("/").map(encodeURIComponent).join("/");
   return {
     name: path.basename(rel),
     path: rel,
     size,
-    url: "/api/files/" + rel.split("/").map(encodeURIComponent).join("/"),
+    url: base + (workspace ? "?ws=" + encodeURIComponent(workspace) : ""),
   };
 }
 
@@ -1285,8 +1317,15 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "list_files",
-      description: "列出 agent-workspace 里的文件与目录。",
-      parameters: { type: "object", properties: {}, required: [] },
+      description: "列出当前工作区或子目录里的文件与目录，默认递归三层（最多 200 项）。如果文件在项目子目录里，用 path 指定目录，不要只看根目录就断言文件不存在。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "相对当前工作区的目录，省略则列出根目录，例如 villa-design" },
+          depth: { type: "number", description: "递归深度 1-3，默认 3" },
+        },
+        required: [],
+      },
     },
   },
   {
@@ -1349,7 +1388,7 @@ async function executeAgentTool(name, args, ctx) {
   if (name === "read_file") {
     const offset = clampInteger(args.offset, 0, Number.MAX_SAFE_INTEGER, 0);
     const limit = clampInteger(args.limit, 1000, READ_MAX_CHARS, READ_DEFAULT_CHARS);
-    const file = await readWorkspaceText(args.path, limit, offset);
+    const file = await readWorkspaceText(args.path, limit, offset, run.workspace);
     const next = file.nextOffset == null ? "已到文件末尾" : `下一段从 offset=${file.nextOffset} 继续`;
     return {
       ok: true,
@@ -1359,14 +1398,17 @@ async function executeAgentTool(name, args, ctx) {
   }
 
   if (name === "list_files") {
-    const files = await listWorkspace();
+    const depth = clampInteger(args.depth, 1, 3, 3);
+    const result = await listWorkspace(String(args.path || ""), depth, run.workspace);
+    const files = result.entries;
     const text = files.length
-      ? files.map((f) => `- ${f.name}${f.dir ? "" : "  (" + f.size + " B)"}`).join("\n")
-      : "(工作区为空)";
+      ? files.map((f) => `- ${f.name}${f.dir ? "" : "  (" + (f.size >= 1024 ? (f.size / 1024).toFixed(1) + " KB" : f.size + " B") + ")"}`).join("\n")
+      : "(该目录为空)";
     return {
       ok: true,
-      summary: files.length + " 个条目",
-      modelText: "agent-workspace 内容：\n" + text,
+      summary: files.length + " 个条目（含子目录）" + (result.truncated ? "，已截断" : ""),
+      modelText: `当前工作区${result.root ? " / " + result.root : ""}（递归 ${depth} 层，最多 200 项）：\n` + text +
+        (result.truncated ? "\n\n（条目过多，已截断；请用 path 缩小范围。）" : ""),
     };
   }
 
@@ -1378,7 +1420,7 @@ async function executeAgentTool(name, args, ctx) {
   if (name === "task_plan") {
     if (args.action === "read") {
       try {
-        const file = await readWorkspaceText(".task-plan.md", 20000);
+        const file = await readWorkspaceText(".task-plan.md", 20000, 0, run.workspace);
         return { ok: true, summary: "已读取计划", modelText: "当前任务计划：\n" + file.text };
       } catch {
         return { ok: true, summary: "暂无计划", modelText: "当前没有落盘的任务计划。" };
@@ -1386,7 +1428,7 @@ async function executeAgentTool(name, args, ctx) {
     }
     const content = String(args.content || "").trim();
     if (!content) return { ok: false, summary: "计划内容为空。", modelText: "错误：content 不能为空。" };
-    await writeFileAtomic(path.join(WORKSPACE, ".task-plan.md"), content + "\n");
+    await writeFileAtomic(path.join(run.workspace, ".task-plan.md"), content + "\n");
     const steps = content.split(/\r?\n/).map((l) => l.replace(/^[-*\d.、)\s]+/, "").trim()).filter(Boolean).slice(0, 8);
     sse.send({ type: "plan", steps });
     return { ok: true, summary: "计划已更新", modelText: "任务计划已更新：\n" + content };
@@ -1402,7 +1444,7 @@ async function executeAgentTool(name, args, ctx) {
         modelText: `错误：单次 content 超过 ${MAX_WRITE_BYTES / 1024} KB。请用 append=true 分块写入（建议每块 12–24 KB），或拆成多个文件。`,
       };
     }
-    const { rel, abs } = workspacePath(args.path);
+    const { rel, abs } = workspacePath(args.path, run.workspace);
     if (!allowedExtension(rel)) {
       return { ok: false, summary: "不支持的文件类型。", modelText: "错误：只允许写入文本类文件（.md/.txt/.json/.csv/.html/.css/.js/.ts/.py/.yml/.xml/.sql）。" };
     }
@@ -1471,7 +1513,7 @@ async function executeAgentTool(name, args, ctx) {
         modelText: `错误：文件写入后大小不一致（期望 ${finalSize}，实际 ${written.size}），请检查磁盘空间或权限。`,
       };
     }
-    const artifact = artifactFor(rel, finalSize);
+    const artifact = artifactFor(rel, finalSize, run.workspace);
     return {
       ok: true,
       summary: "已写入 " + rel + (hadBackup ? "（已备份 .bak）" : "（新文件）"),
@@ -1486,24 +1528,25 @@ async function executeAgentTool(name, args, ctx) {
   return { ok: false, summary: "未知工具。", modelText: "错误：未知工具 " + name };
 }
 
-function agentSystemPrompt() {
+function agentSystemPrompt(workspace = WORKSPACE) {
   return [
     "你是 DeepSeek Agent，运行在一个以对话为主的本地网页端。用户显式切换到 Agent 模式，才执行多步任务。",
     "",
-    `工作区：${WORKSPACE}。所有文件工具只能使用相对此目录的路径，不能访问工作区之外。`,
+    `工作区：${workspace}。所有文件工具只能使用相对此目录的路径，不能访问工作区之外。`,
     "",
     "工作方式：",
     "1. 先理解目标和约束，用一两句话说明你准备怎么做，然后调用工具推进。",
     "2. 需要实时资料时调用 web_search，不要编造搜索结果；引用资料时使用 [1] 这样的编号。",
-    "3. 写文件必须调用 write_file。系统会自动生成 diff 并向用户请求确认；在工具返回成功之前，不要声称已经写入。",
+    "3. 写文件必须调用 write_file。系统会自动生成 diff 并向用户请求确认；只有工具返回 ok=true 才算写入成功。确认超时、拒绝或失败时，必须明确说文件未写入，不能声称成功。",
     "4. 修改已有文件前，可以先调用 write_file 并设置 dry_run=true 预演；确认无误后再正式写入。",
     "5. 用 task_plan 维护任务状态，尤其是步骤较多的任务。每完成一个阶段就更新一次。",
     "6. 不要请求执行 shell，不要读取工作区之外的路径，不要输出或猜测 API Key。",
     "7. 如果用户拒绝写入，明确说明文件未改动，并根据反馈调整。",
     "8. 写文档可以一次写较长的内容，但单次 content 硬上限是 500 KB；建议每次控制在 12–24 KB，超长内容用 append=true 分块，文件上限 24 MB。读大文件用 read_file 的 offset/limit 继续读。一次写不完就分多次 append，不要反复原样重试。",
     "9. 多文件任务先用 task_plan 落一份清单，每完成一项更新进度；轮次有限（15 轮），不要把预算浪费在重复读同一个文件上。",
-    "10. 能力边界：可以写文本/Markdown/ASCII 图/代码、读写文件、搜索网页；不能生成真实位图、CAD 二进制、视频或施工级图纸。遇到这类请求，先说明能做/不能做/替代方案，再问最多 3 个关键问题，其余参数给默认值。",
-    "11. 最终用中文 Markdown 总结：完成了什么、产出文件在哪里、下一步建议。未完成的步骤必须明确列出，不要只写「已完成」。",
+    "10. list_files 默认递归三层；如果文件在项目子目录，用 path 指定目录查看。不要因为根目录只看到文件夹就断言文件不存在；写完产出后要用 read_file 或 list_files 再确认。",
+    "11. 能力边界：可以写文本/Markdown/ASCII 图/代码、读写文件、搜索网页；不能生成真实位图、CAD 二进制、视频或施工级图纸。遇到这类请求，先说明能做/不能做/替代方案，再问最多 3 个关键问题，其余参数给默认值。",
+    "12. 最终用中文 Markdown 总结：完成了什么、产出文件在哪里、下一步建议。未完成的步骤必须明确列出，不要只写「已完成」。",
     "",
     "当前时间：" + new Date().toLocaleString("zh-CN", { hour12: false }),
     "对话是默认入口；Agent 只在被明确需要时工作，不要为了展示能力而调用无关工具。",
@@ -1559,7 +1602,7 @@ async function finalizeWithEvidence(messages, evidence, run, unfinished = []) {
 }
 
 async function runAgent(run, inputMessages, sse) {
-  const messages = [{ role: "system", content: agentSystemPrompt() }, ...inputMessages];
+  const messages = [{ role: "system", content: agentSystemPrompt(run.workspace) }, ...inputMessages];
   const evidence = [];
   const unfinished = [];
   const seenGaps = new Set();
@@ -1742,11 +1785,20 @@ async function handleAgent(req, res, body) {
   const runId = typeof body.runId === "string" && /^[A-Za-z0-9_-]{4,80}$/.test(body.runId)
     ? body.runId
     : crypto.randomUUID();
+  let runWorkspace = WORKSPACE;
+  if (body.workspace) {
+    try {
+      runWorkspace = validateWorkspaceTarget(body.workspace);
+    } catch (err) {
+      return sendJson(res, 400, { error: err.message || "工作区无效。" });
+    }
+  }
   const run = {
     id: runId,
     controller: new AbortController(),
     pending: new Map(),
     startedAt: Date.now(),
+    workspace: runWorkspace,
     fullAccess: !!(body.fullAccess === true && body.fullAccessAck === true),
   };
   agentRuns.set(runId, run);
@@ -1845,16 +1897,25 @@ function openBrowser(url) {
   }
 }
 
-async function serveWorkspaceFile(res, pathname) {
+async function serveWorkspaceFile(res, pathname, searchParams) {
   let rel;
   try {
     rel = pathname.slice("/api/files/".length).split("/").map(decodeURIComponent).join("/");
   } catch {
     return sendJson(res, 400, { error: "文件名编码不正确。" });
   }
+  let workspace = WORKSPACE;
+  const requestedWorkspace = String(searchParams?.get("ws") || "").trim();
+  if (requestedWorkspace) {
+    try {
+      workspace = validateWorkspaceTarget(requestedWorkspace);
+    } catch (err) {
+      return sendJson(res, 400, { error: err.message });
+    }
+  }
   let info;
   try {
-    info = workspacePath(rel);
+    info = workspacePath(rel, workspace);
   } catch (err) {
     return sendJson(res, 400, { error: err.message });
   }
@@ -1956,6 +2017,16 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, Object.assign({ ok: true }, workspaceInfo()));
     }
 
+    if (req.method === "POST" && url.pathname === "/api/workspace/check") {
+      const body = await readJson(req, 64 * 1024);
+      try {
+        const target = validateWorkspaceTarget(body.path);
+        return sendJson(res, 200, { ok: true, path: target });
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || "工作区无效。" });
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/api/workspace") {
       if (agentRuns.size > 0) {
         return sendJson(res, 409, { error: "Agent 正在执行任务，结束后再切换工作区。" });
@@ -2054,7 +2125,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/files/")) {
-      return await serveWorkspaceFile(res, url.pathname);
+      return await serveWorkspaceFile(res, url.pathname, url.searchParams);
     }
 
     if (req.method === "GET" && url.pathname === "/favicon.ico") {

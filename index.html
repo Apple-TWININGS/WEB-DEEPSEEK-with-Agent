@@ -107,6 +107,10 @@
         <span class="new-chat-label">新建对话</span>
         <kbd class="new-chat-kbd">Ctrl K</kbd>
       </button>
+      <button class="new-chat new-agent-entry" id="newAgentBtn" type="button" aria-label="新建 Agent 任务">
+        <span class="new-chat-icon"><svg><use href="#i-robot"/></svg></span>
+        <span class="new-chat-label">新建 Agent 任务</span>
+      </button>
 
       <div class="side-search">
         <svg class="side-search-icon"><use href="#i-search"/></svg>
@@ -252,15 +256,6 @@
                 <svg><use href="#i-paperclip"/></svg>
               </button>
               <input id="fileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.log,.js,.ts,.tsx,.jsx,.py,.html,.css,.yaml,.yml,.xml,.sql,.sh" multiple hidden>
-
-              <div class="mode-switch" id="modeSwitch" role="group" aria-label="工作模式">
-                <button class="mode-option is-active" type="button" data-mode="chat" aria-pressed="true">
-                  <svg><use href="#i-chat"/></svg><span>对话</span>
-                </button>
-                <button class="mode-option" type="button" data-mode="agent" aria-pressed="false">
-                  <svg><use href="#i-robot"/></svg><span>Agent</span>
-                </button>
-              </div>
 
               <div class="mode-tools" id="chatTools">
                 <button class="tool-btn tool-toggle" id="thinkToggle" type="button" aria-pressed="false" title="深度思考">
@@ -428,8 +423,8 @@
       <section class="settings-section workspace-settings" id="workspaceSection">
         <div class="settings-section-head">
           <div>
-            <h3>Agent 工作区</h3>
-            <p>Agent 只能读写这个目录。切换到代码库或文档目录前请确认。</p>
+            <h3>当前对话工作区</h3>
+            <p>每个对话可以单独选择工作区；这里只影响当前对话。</p>
           </div>
           <span class="status-pill is-ok" id="workspaceStatusPill"><span></span>可写</span>
         </div>
@@ -443,7 +438,7 @@
             <button class="btn btn-ghost btn-small" id="resetWorkspace" type="button">恢复默认</button>
           </div>
         </div>
-        <p class="settings-hint" id="workspaceHint">只允许相对路径；写文件仍会先展示 diff 并等待你确认。</p>
+        <p class="settings-hint" id="workspaceHint">只影响当前对话；只允许相对路径，写文件仍会先展示 diff 并等待你确认。</p>
       </section>
 
       <section class="settings-section permission-settings" id="permissionSection">
@@ -509,7 +504,7 @@
       <section class="settings-section about-section">
         <div class="about-brand">
           <span class="brand-mark small"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
-          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.1</small></div>
+          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.2</small></div>
         </div>
         <p>界面与 Agent 工程参考 <em>Professional Agent</em> 的工具循环、diff 审批、备份恢复与密钥管理设计。聊天是默认入口，Agent 只在需要时出现。</p>
         <div class="about-badges"><span>Chat first</span><span>Local-first</span><span>Human in the loop</span></div>

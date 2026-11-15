@@ -439,6 +439,9 @@ body.has-wallpaper .dialog::backdrop { background: rgba(9, 13, 22, .32); }
 }
 .new-chat:hover { border-color: rgba(77, 107, 254, .35); box-shadow: 0 6px 20px rgba(77, 107, 254, .1); }
 .new-chat:active { transform: scale(.985); }
+.new-agent-entry { height: 40px; margin-top: 5px; border-style: dashed; background: var(--surface); }
+.new-agent-entry .new-chat-icon { color: var(--text-2); background: var(--surface-2); }
+.new-agent-entry .new-chat-label { color: var(--text-2); font-size: 12.5px; font-weight: 550; }
 .new-chat-icon {
   width: 26px;
   height: 26px;

@@ -72,7 +72,7 @@
     thinkTimer: null,
     auth: { required: false, authenticated: true },
     lan: { lan: false, url: "", addresses: [], authRequired: false },
-    workspace: { path: "", defaultPath: "" },
+    workspace: { path: "", defaultPath: "", exists: false },
     workspaceBrowsePath: "",
     fullAccess: { active: false, expiresAt: 0 },
     fullAccessTimer: null
@@ -242,7 +242,8 @@
       updatedAt: now(),
       messages: [],
       draft: "",
-      hasAgent: false
+      hasAgent: false,
+      workspace: ""
     };
   }
 
@@ -256,7 +257,8 @@
       updatedAt: Number(raw.updatedAt) || now(),
       messages: [],
       draft: typeof raw.draft === "string" ? raw.draft.slice(0, 24000) : "",
-      hasAgent: !!raw.hasAgent
+      hasAgent: !!raw.hasAgent,
+      workspace: typeof raw.workspace === "string" ? raw.workspace.slice(0, 500) : ""
     };
     if (Array.isArray(raw.messages)) {
       conv.messages = raw.messages.map(function (m) {
@@ -377,10 +379,10 @@
       active = state.conversations.find(function (c) { return !c.messages.length; }) || state.conversations[0];
       state.activeId = active.id;
     }
-    // Safety: reloading a page must never resume in Agent mode. The user can
-    // deliberately switch again, but a fresh look at the app starts in chat.
-    state.settings.mode = "chat";
+    // Each conversation owns its mode. Empty/new conversations start in chat;
+    // reopening an Agent conversation restores Agent without a toggle.
     if (!active.messages.length) active.mode = "chat";
+    state.settings.mode = active.mode === "agent" ? "agent" : "chat";
   }
 
   function scheduleSave() {
@@ -1139,6 +1141,28 @@
     if (!silent) toast("已关闭完全权限，恢复逐次确认");
   }
 
+  function activeConversationWorkspace() {
+    var conv = state.conversations.find(function (c) { return c.id === state.activeId; });
+    return (conv && conv.workspace) || state.workspace.defaultPath || state.workspace.path || "";
+  }
+
+  function renderWorkspaceInfo() {
+    var path = activeConversationWorkspace();
+    state.workspace.path = path;
+    if (els.workspacePath) {
+      els.workspacePath.textContent = path || "未设置";
+      els.workspacePath.title = path || "";
+    }
+    if (els.fullAccessWorkspacePath) els.fullAccessWorkspacePath.textContent = path || "当前对话工作区";
+    if (els.workspaceStatusPill) {
+      els.workspaceStatusPill.className = "status-pill is-ok";
+      els.workspaceStatusPill.innerHTML = "<span></span>当前对话";
+    }
+    if (els.workspaceHint) {
+      els.workspaceHint.textContent = "只影响当前对话；Agent 只能访问此目录下的相对路径，写文件仍会先展示 diff。";
+    }
+  }
+
   async function loadWorkspaceInfo() {
     try {
       var res = await fetch("/api/workspace", { cache: "no-store" });
@@ -1148,19 +1172,9 @@
       }
       if (!res.ok) return;
       var data = await res.json();
-      state.workspace = data || state.workspace;
-      if (els.workspacePath) {
-        els.workspacePath.textContent = data.path || "未设置";
-        els.workspacePath.title = data.path || "";
-      }
-      if (els.fullAccessWorkspacePath) els.fullAccessWorkspacePath.textContent = data.path || "当前工作区";
-      if (els.workspaceStatusPill) {
-        els.workspaceStatusPill.className = "status-pill " + (data.exists ? "is-ok" : "is-warn");
-        els.workspaceStatusPill.innerHTML = "<span></span>" + (data.exists ? "可写" : "目录不存在");
-      }
-      if (els.workspaceHint) {
-        els.workspaceHint.textContent = "Agent 只能访问此目录下的相对路径；写文件仍会先展示 diff 并等待你确认。";
-      }
+      state.workspace.defaultPath = data.path || state.workspace.defaultPath;
+      state.workspace.exists = !!data.exists;
+      renderWorkspaceInfo();
     } catch (e) { /* settings are optional until logged in */ }
   }
 
@@ -1224,7 +1238,7 @@
     if (!state.workspaceBrowsePath) return;
     els.workspaceSelect.disabled = true;
     try {
-      var res = await fetch("/api/workspace", {
+      var res = await fetch("/api/workspace/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: state.workspaceBrowsePath })
@@ -1235,10 +1249,14 @@
       }
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) throw new Error(data.error || "切换失败");
+      var conv = activeConversation();
+      conv.workspace = data.path || state.workspaceBrowsePath;
+      conv.updatedAt = now();
       disableFullAccess(true);
       closeWorkspaceDialog();
-      await loadWorkspaceInfo();
-      toast("Agent 工作区已切换", "success");
+      renderWorkspaceInfo();
+      scheduleSave();
+      toast("当前对话工作区已切换", "success");
     } catch (e) {
       els.workspaceError.textContent = friendlyError(e);
       els.workspaceSelect.disabled = false;
@@ -1246,21 +1264,15 @@
   }
 
   async function resetWorkspace() {
-    if (!window.confirm("恢复默认 Agent 工作区？")) return;
-    try {
-      var res = await fetch("/api/workspace", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: "" })
-      });
-      var data = await res.json().catch(function () { return {}; });
-      if (!res.ok) throw new Error(data.error || "恢复失败");
-      disableFullAccess(true);
-      await loadWorkspaceInfo();
-      toast("已恢复默认工作区", "success");
-    } catch (e) {
-      toast(friendlyError(e), "error");
-    }
+    if (!window.confirm("把当前对话恢复到默认工作区？")) return;
+    var conv = activeConversation();
+    conv.workspace = "";
+    conv.updatedAt = now();
+    disableFullAccess(true);
+    await loadWorkspaceInfo();
+    renderWorkspaceInfo();
+    scheduleSave();
+    toast("当前对话已恢复默认工作区", "success");
   }
 
   /* ============================================================
@@ -1493,11 +1505,12 @@
     var conv = state.conversations.find(function (c) { return c.id === id; });
     if (!conv) return;
     state.activeId = id;
-    state.settings.mode = "chat";
+    state.settings.mode = conv.mode === "agent" ? "agent" : "chat";
     state.attachments = [];
     closeSidebar();
     syncComposerFromActive();
     updateModeUI();
+    renderWorkspaceInfo();
     renderSidebar();
     renderChat({ forceBottom: true });
     scheduleSave();
@@ -1525,6 +1538,7 @@
     closeSidebar();
     syncComposerFromActive();
     updateModeUI();
+    renderWorkspaceInfo();
     renderSidebar();
     renderChat({ forceBottom: true });
     scheduleSave();
@@ -1605,8 +1619,8 @@
         "</div>";
     }
     var cta = isAgent
-      ? '<button class="agent-cta" id="agentCta" type="button"><span class="agent-cta-icon">' + icon("chat") + '</span><span><strong>切回对话模式</strong><small>日常问答更快，不需要每一步都看到工具</small></span>' + icon("arrow-right", "agent-cta-arrow") + "</button>"
-      : '<button class="agent-cta" id="agentCta" type="button"><span class="agent-cta-icon">' + icon("robot") + '</span><span><strong>需要多步完成？交给 Agent</strong><small>它会规划、调用工具，并在写文件前请你确认</small></span>' + icon("arrow-right", "agent-cta-arrow") + "</button>";
+      ? '<button class="agent-cta" id="agentCta" type="button"><span class="agent-cta-icon">' + icon("chat") + '</span><span><strong>新建一个普通对话</strong><small>日常问答更快，不会显示工具步骤</small></span>' + icon("arrow-right", "agent-cta-arrow") + "</button>"
+      : '<button class="agent-cta" id="agentCta" type="button"><span class="agent-cta-icon">' + icon("robot") + '</span><span><strong>新建一个 Agent 任务</strong><small>另开一个对话，它会规划、调用工具并在写文件前确认</small></span>' + icon("arrow-right", "agent-cta-arrow") + "</button>";
     var footnote = isAgent
       ? '<span>' + icon("eye") + "工具调用可见</span><span>" + icon("shield") + "写入前确认</span><span>" + icon("download") + "产出可下载</span>"
       : '<span>' + icon("shield") + "本地优先</span><span>" + icon("file") + "文件产出可下载</span><span>" + icon("check") + "写入前二次确认</span>";
@@ -2058,7 +2072,7 @@
     if (mode !== "agent") mode = "chat";
     state.settings.mode = mode;
     var conv = activeConversation();
-    if (!conv.messages.length) conv.mode = mode;
+    conv.mode = mode;
     updateModeUI();
     if (conv.messages.length === 0) {
       renderWelcome();
@@ -2214,6 +2228,7 @@
     if (!text && attachments.length) text = "请阅读附件并帮我分析。";
     var mode = state.settings.mode === "agent" ? "agent" : "chat";
     var conv = activeConversation();
+    conv.mode = mode;
     conv.draft = "";
     appendUserTurn(conv, text, attachments, mode);
     var demoFlag = !(state.server.online && state.server.key.configured);
@@ -2428,6 +2443,7 @@
       runId: runId,
       messages: buildModelMessages(conv, msg.id),
       model: "deepseek-chat",
+      workspace: conv.workspace || state.workspace.defaultPath || state.workspace.path || "",
       fullAccess: fullAccess,
       fullAccessAck: fullAccess
     };
@@ -3422,6 +3438,7 @@
   function bindEvents() {
     /* Sidebar */
     els.newChatBtn.addEventListener("click", function () { newChat("chat"); });
+    els.newAgentBtn.addEventListener("click", function () { newChat("agent"); });
     els.collapseBtn.addEventListener("click", function () {
       state.settings.sidebarCollapsed = !document.getElementById("appShell").classList.contains("is-collapsed");
       syncSidebarCollapse();
@@ -3619,7 +3636,7 @@
       }
       var cta = e.target.closest("#agentCta");
       if (cta) {
-        setMode(state.settings.mode === "agent" ? "chat" : "agent", { toast: true });
+        newChat(state.settings.mode === "agent" ? "chat" : "agent");
       }
     });
 
@@ -3648,11 +3665,6 @@
         e.preventDefault();
         stopStreaming();
       }
-    });
-    els.modeSwitch.addEventListener("click", function (e) {
-      var btn = e.target.closest("[data-mode]");
-      if (!btn) return;
-      setMode(btn.dataset.mode);
     });
     els.thinkToggle.addEventListener("click", function () {
       if (state.settings.mode === "agent") return;
@@ -3919,7 +3931,7 @@
     els.attachmentTray = $("#attachmentTray");
     els.attachBtn = $("#attachBtn");
     els.fileInput = $("#fileInput");
-    els.modeSwitch = $("#modeSwitch");
+    els.newAgentBtn = $("#newAgentBtn");
     els.chatTools = $("#chatTools");
     els.agentTools = $("#agentTools");
     els.thinkToggle = $("#thinkToggle");
