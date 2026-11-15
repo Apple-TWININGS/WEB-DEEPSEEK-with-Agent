@@ -26,6 +26,7 @@ $assets = [ordered]@{
   "styles.css" = "styles.css"
   "app.js" = "app.js"
   "markdown.js" = "markdown.js"
+  "markdown-worker.js" = "markdown-worker.js"
   "deepseek-icon.png" = "deepseek-icon.png"
 }
 $seaConfig = [ordered]@{

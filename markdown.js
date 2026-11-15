@@ -448,5 +448,6 @@
       .trim();
   }
 
-  window.DSMarkdown = { render: render, toText: toText, escapeHtml: escapeHtml };
+  var root = typeof window !== "undefined" ? window : (typeof self !== "undefined" ? self : globalThis);
+  root.DSMarkdown = { render: render, toText: toText, escapeHtml: escapeHtml };
 })();

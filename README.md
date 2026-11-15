@@ -22,6 +22,8 @@
 
 Agent 只在手动切换后启动，不会在普通聊天里擅自调用工具。
 
+迭代优化：长回答的 Markdown 在 `markdown-worker.js` 中解析，不阻塞主线程；联网搜索结果带 5 分钟内存缓存；壁纸库按可视区域懒加载缩略图，启动时只加载当前壁纸原图。
+
 ## Windows EXE（推荐普通用户）
 
 发布页：
@@ -156,6 +158,8 @@ EXE 模式下写入：
 
 - 图片 Blob 存在浏览器 **IndexedDB**；
 - 文件列表和参数存在 `localStorage`；
+- 上传时生成小尺寸缩略图，设置里的缩略图按可视区域懒加载；
+- 启动时只加载当前壁纸原图，切换时按需加载，不会一次性把所有大图读进内存；
 - 不上传服务器。清除浏览器站点数据会同时删除壁纸。
 
 ## Agent 是怎么执行的
@@ -199,6 +203,7 @@ deepseek-web/
   index.html            页面骨架、图标 sprite、设置与确认弹窗
   styles.css            主题、壁纸/玻璃、响应式布局、消息/Agent 轨迹/diff 样式
   markdown.js           无依赖 Markdown 渲染器（先转义，再格式化）
+  markdown-worker.js    流式长文本的 Markdown Worker
   app.js                状态、渲染、聊天、Agent 事件、壁纸与审批流程
   server.mjs            静态服务 + DeepSeek 代理 + Agent 工具循环
   packaging/

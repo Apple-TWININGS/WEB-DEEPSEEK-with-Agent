@@ -1873,9 +1873,13 @@ body.has-wallpaper .dialog::backdrop { background: rgba(9, 13, 22, .32); }
 .wallpaper-slot-thumb {
   position: absolute;
   inset: 0;
+  background-color: var(--surface-2);
   background-size: cover;
   background-position: center;
+  opacity: 0;
+  transition: opacity .25s ease;
 }
+.wallpaper-slot-thumb.is-loaded { opacity: 1; }
 .wallpaper-slot-shade {
   position: absolute;
   inset: 0;

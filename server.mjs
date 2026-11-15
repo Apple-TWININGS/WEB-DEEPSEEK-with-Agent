@@ -27,10 +27,10 @@ const ROOT = SOURCE_FILE ? path.dirname(SOURCE_FILE) : process.cwd();
 const SEA_ASSETS = typeof globalThis.__DEEPSEEK_SEA_ASSETS__ === "function"
   ? globalThis.__DEEPSEEK_SEA_ASSETS__
   : null;
-const DATA_ROOT = globalThis.__DEEPSEEK_SEA_DATA_ROOT__ || ROOT;
+const DATA_ROOT = globalThis.__DEEPSEEK_SEA_DATA_ROOT__ || process.env.DEEPSEEK_WEB_DATA || ROOT;
 const WORKSPACE = path.join(DATA_ROOT, "agent-workspace");
 const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const API_BASE = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
@@ -43,6 +43,9 @@ const MAX_BODY = 2 * 1024 * 1024;
 const MAX_AGENT_ROUNDS = 6;
 const MAX_TOOL_CALLS_PER_ROUND = 4;
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
+const SEARCH_TTL_MS = 5 * 60 * 1000;
+const SEARCH_CACHE_MAX = 60;
+const searchCache = new Map();
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -62,6 +65,7 @@ const STATIC_FILES = new Map([
   ["/styles.css", "styles.css"],
   ["/app.js", "app.js"],
   ["/markdown.js", "markdown.js"],
+  ["/markdown-worker.js", "markdown-worker.js"],
   ["/deepseek-icon.png", "deepseek-icon.png"],
 ]);
 
@@ -92,7 +96,7 @@ function setSecurityHeaders(res) {
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; " +
+    "img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; " +
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
   );
 }
@@ -364,11 +368,29 @@ async function searchBingRss(query, limit) {
 async function webSearch(query, limit = 6) {
   const q = truncate(String(query || "").replace(/\s+/g, " ").trim(), 240);
   if (!q) throw new Error("搜索词为空");
+  const cacheKey = q.toLowerCase();
+  const cached = searchCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < SEARCH_TTL_MS) {
+    return cached.results.slice(0, limit);
+  }
+
   const errors = [];
   for (const provider of [searchDuckDuckGo, searchBingRss]) {
     try {
       const results = await provider(q, limit);
-      return results;
+      const unique = [];
+      const seen = new Set();
+      for (const item of results) {
+        if (!/^https?:\/\//i.test(item.url) || seen.has(item.url)) continue;
+        seen.add(item.url);
+        unique.push(item);
+      }
+      if (!unique.length) throw new Error("搜索结果为空");
+      searchCache.set(cacheKey, { ts: Date.now(), results: unique });
+      while (searchCache.size > SEARCH_CACHE_MAX) {
+        searchCache.delete(searchCache.keys().next().value);
+      }
+      return unique.slice(0, limit);
     } catch (err) {
       errors.push(err.message);
     }
@@ -1185,11 +1207,17 @@ async function runAgent(run, inputMessages, sse) {
       const stepId = "tool-" + (++seq);
       let args = {};
       let parseError = "";
-      try {
-        args = JSON.parse(call.function?.arguments || "{}");
-        if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("参数必须是对象");
-      } catch (err) {
-        parseError = err.message;
+      if (result.finishReason === "length") {
+        // A tool call that hit the output ceiling may be complete-looking but
+        // still truncated. Do not execute it; let the model split the work.
+        parseError = "模型输出达到上限，工具参数可能被截断";
+      } else {
+        try {
+          args = JSON.parse(call.function?.arguments || "{}");
+          if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("参数必须是对象");
+        } catch (err) {
+          parseError = err.message;
+        }
       }
 
       sse.send({

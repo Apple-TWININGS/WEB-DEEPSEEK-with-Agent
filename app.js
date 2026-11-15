@@ -46,6 +46,14 @@
     wallpaperLayers: [],
     wallpaperLayerIndex: 0,
     currentWallpaperId: "",
+    wallpaperUrls: new Map(),
+    wallpaperThumbs: new Map(),
+    wallpaperLoadToken: 0,
+    wallpaperThumbObserver: null,
+    mdWorker: null,
+    mdSeq: 0,
+    mdJobs: new Map(),
+    mdCallbacks: new Map(),
     assetDb: null,
     server: {
       online: false,
@@ -448,6 +456,121 @@
     return state.wallpapers.find(function (w) { return w.id === id; }) || null;
   }
 
+  function wallpaperThumbKey(id) {
+    return id + "::thumb";
+  }
+
+  function pruneWallpaperUrlCache() {
+    while (state.wallpaperUrls.size > 6) {
+      var removed = false;
+      for (var entry of state.wallpaperUrls.entries()) {
+        if (entry[0] !== state.settings.wallpaper.activeId) {
+          URL.revokeObjectURL(entry[1]);
+          state.wallpaperUrls.delete(entry[0]);
+          removed = true;
+          break;
+        }
+      }
+      if (!removed) break;
+    }
+  }
+
+  async function getWallpaperUrl(id) {
+    if (state.wallpaperUrls.has(id)) return state.wallpaperUrls.get(id);
+    var blob = await idbGet(id);
+    if (!blob) throw new Error("壁纸文件不存在");
+    var url = URL.createObjectURL(blob);
+    state.wallpaperUrls.set(id, url);
+    pruneWallpaperUrlCache();
+    return url;
+  }
+
+  function createWallpaperThumbnail(file) {
+    return new Promise(function (resolve) {
+      var objectUrl = URL.createObjectURL(file);
+      var img = new Image();
+      var done = false;
+      function finish(value) {
+        if (done) return;
+        done = true;
+        URL.revokeObjectURL(objectUrl);
+        resolve(value);
+      }
+      img.onload = function () {
+        try {
+          var maxW = 360;
+          var maxH = 240;
+          var scale = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+          var canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+          var ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(function (blob) { finish(blob || null); }, "image/jpeg", 0.78);
+        } catch (e) {
+          finish(null);
+        }
+      };
+      img.onerror = function () { finish(null); };
+      img.src = objectUrl;
+    });
+  }
+
+  function loadWallpaperThumb(el) {
+    var id = el && el.dataset ? el.dataset.thumbId : "";
+    if (!id) return;
+    if (state.wallpaperThumbs.has(id)) {
+      el.style.backgroundImage = 'url("' + state.wallpaperThumbs.get(id) + '")';
+      el.classList.add("is-loaded");
+      return;
+    }
+    (async function () {
+      var cached = state.wallpaperThumbs.get(id);
+      if (cached) {
+        el.style.backgroundImage = 'url("' + cached + '")';
+        el.classList.add("is-loaded");
+        return;
+      }
+      var blob = null;
+      try {
+        blob = await idbGet(wallpaperThumbKey(id));
+        if (!blob) blob = await idbGet(id);
+      } catch (e) {
+        return;
+      }
+      if (!blob) return;
+      var url = URL.createObjectURL(blob);
+      state.wallpaperThumbs.set(id, url);
+      if (el.isConnected) {
+        el.style.backgroundImage = 'url("' + url + '")';
+        el.classList.add("is-loaded");
+      }
+    })();
+  }
+
+  function observeWallpaperThumbs() {
+    if (!els.wallpaperGrid) return;
+    if (state.wallpaperThumbObserver) {
+      state.wallpaperThumbObserver.disconnect();
+      state.wallpaperThumbObserver = null;
+    }
+    var thumbs = $$(".wallpaper-slot-thumb[data-thumb-id]:not(.is-loaded)", els.wallpaperGrid);
+    if (!thumbs.length) return;
+    if (!("IntersectionObserver" in window)) {
+      thumbs.forEach(loadWallpaperThumb);
+      return;
+    }
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        observer.unobserve(entry.target);
+        loadWallpaperThumb(entry.target);
+      });
+    }, { root: els.wallpaperGrid, rootMargin: "240px" });
+    thumbs.forEach(function (el) { observer.observe(el); });
+    state.wallpaperThumbObserver = observer;
+  }
+
   function ensureWallpaperLayers() {
     if (!els.wallpaperSlides) return;
     if (state.wallpaperLayers.length === 2 && els.wallpaperSlides.children.length === 2) return;
@@ -457,7 +580,7 @@
     state.currentWallpaperId = "";
   }
 
-  function updateWallpaperImage(force) {
+  async function updateWallpaperImage(force) {
     ensureWallpaperLayers();
     var wp = currentWallpaper();
     if (!wp) {
@@ -466,9 +589,19 @@
       return;
     }
     if (!force && state.currentWallpaperId === wp.id) return;
+    var token = ++state.wallpaperLoadToken;
+    var url;
+    try {
+      url = await getWallpaperUrl(wp.id);
+    } catch (e) {
+      if (token === state.wallpaperLoadToken) toast("无法读取壁纸文件：" + (e.message || "文件已被清理"), "error");
+      return;
+    }
+    if (token !== state.wallpaperLoadToken) return;
+    if (!state.settings.wallpaper.enabled || state.settings.wallpaper.activeId !== wp.id) return;
     var targetIndex = 1 - state.wallpaperLayerIndex;
     var target = state.wallpaperLayers[targetIndex];
-    target.style.backgroundImage = 'url("' + wp.url + '")';
+    target.style.backgroundImage = 'url("' + url + '")';
     // Make sure the new image is decoded before the opacity transition starts.
     void target.offsetWidth;
     state.wallpaperLayers.forEach(function (layer, i) {
@@ -512,6 +645,7 @@
     root.setProperty("--glass-opacity", (clampNumber(wp.glassOpacity, 20, 95, 62) / 100).toFixed(2));
     updateWallpaperIndicator();
     if (!on) {
+      state.wallpaperLoadToken++;
       state.wallpaperLayers.forEach(function (layer) { layer.classList.remove("is-active"); });
       state.currentWallpaperId = "";
       return;
@@ -545,8 +679,10 @@
     var activeId = state.settings.wallpaper.activeId;
     var html = state.wallpapers.map(function (w) {
       var active = w.id === activeId;
+      var thumbUrl = state.wallpaperThumbs.get(w.id) || "";
       return '<div class="wallpaper-slot' + (active ? " is-active" : "") + '" data-wallpaper-id="' + escapeAttr(w.id) + '" role="button" tabindex="0" aria-label="使用壁纸 ' + escapeAttr(w.name) + '">' +
-        '<div class="wallpaper-slot-thumb" style="background-image:url(&quot;' + escapeAttr(w.url) + '&quot;)"></div>' +
+        '<div class="wallpaper-slot-thumb' + (thumbUrl ? " is-loaded" : "") + '" data-thumb-id="' + escapeAttr(w.id) + '"' +
+        (thumbUrl ? ' style="background-image:url(&quot;' + escapeAttr(thumbUrl) + '&quot;)"' : "") + "></div>" +
         '<div class="wallpaper-slot-shade"></div>' +
         (active ? '<span class="wallpaper-slot-badge">使用中</span>' : "") +
         '<span class="wallpaper-slot-name">' + escapeHtml(w.name) + "</span>" +
@@ -556,6 +692,7 @@
     }).join("");
     html += '<button class="wallpaper-add" type="button" data-wallpaper-add>' + icon("upload") + "<span>添加壁纸</span></button>";
     els.wallpaperGrid.innerHTML = html;
+    observeWallpaperThumbs();
     updateWallpaperIndicator();
   }
 
@@ -580,9 +717,14 @@
         toast("保存壁纸失败：" + (e.message || "本地空间不足"), "error", 5000);
         continue;
       }
+      var thumb = await createWallpaperThumbnail(file);
+      if (thumb) {
+        try { await idbPut(wallpaperThumbKey(id), thumb); } catch (e) { /* thumbnail is optional */ }
+      }
       var meta = { id: id, name: file.name || "壁纸", size: file.size, addedAt: now() };
       state.settings.wallpapers.push(meta);
-      state.wallpapers.push(Object.assign({}, meta, { url: URL.createObjectURL(file) }));
+      state.wallpapers.push(meta);
+      state.wallpaperUrls.set(id, URL.createObjectURL(file));
       added.push(meta);
     }
     els.wallpaperInput.value = "";
@@ -590,6 +732,7 @@
     state.settings.wallpaper.activeId = added[added.length - 1].id;
     state.settings.wallpaper.enabled = true;
     state.currentWallpaperId = "";
+    pruneWallpaperUrlCache();
     renderWallpaperSlots();
     syncWallpaperControls();
     applyWallpaper();
@@ -604,8 +747,14 @@
     var removed = state.wallpapers[index];
     state.wallpapers.splice(index, 1);
     state.settings.wallpapers = state.settings.wallpapers.filter(function (w) { return w.id !== id; });
-    if (removed.url) URL.revokeObjectURL(removed.url);
+    var cachedUrl = state.wallpaperUrls.get(id);
+    if (cachedUrl) URL.revokeObjectURL(cachedUrl);
+    state.wallpaperUrls.delete(id);
+    var cachedThumb = state.wallpaperThumbs.get(id);
+    if (cachedThumb) URL.revokeObjectURL(cachedThumb);
+    state.wallpaperThumbs.delete(id);
     idbDelete(id).catch(function () {});
+    idbDelete(wallpaperThumbKey(id)).catch(function () {});
     if (state.settings.wallpaper.activeId === id) {
       var next = state.wallpapers[Math.min(index, state.wallpapers.length - 1)];
       state.settings.wallpaper.activeId = next ? next.id : "";
@@ -659,41 +808,18 @@
     }, seconds * 1000);
   }
 
-  async function initWallpapers() {
+  function initWallpapers() {
     ensureWallpaperLayers();
     var metas = Array.isArray(state.settings.wallpapers) ? state.settings.wallpapers : [];
-    var loaded = [];
-    var storageFailed = false;
-    for (var i = 0; i < metas.length; i++) {
-      var meta = metas[i];
-      try {
-        var blob = await idbGet(meta.id);
-        if (blob) {
-          loaded.push({
-            id: meta.id,
-            name: meta.name || "壁纸",
-            size: meta.size || blob.size || 0,
-            addedAt: meta.addedAt || now(),
-            url: URL.createObjectURL(blob)
-          });
-        }
-      } catch (e) {
-        storageFailed = true;
-      }
-    }
-    state.wallpapers = loaded;
-    state.settings.wallpapers = loaded.map(function (w) {
-      return { id: w.id, name: w.name, size: w.size, addedAt: w.addedAt };
+    state.wallpapers = metas.map(function (w) {
+      return { id: w.id, name: w.name || "壁纸", size: w.size || 0, addedAt: w.addedAt || now() };
     });
     var wp = state.settings.wallpaper;
-    if (!loaded.length) {
+    if (!state.wallpapers.length) {
       wp.enabled = false;
       wp.activeId = "";
-    } else if (!loaded.some(function (w) { return w.id === wp.activeId; })) {
-      wp.activeId = loaded[0].id;
-    }
-    if (storageFailed && !loaded.length && metas.length) {
-      toast("无法读取本地壁纸库，壁纸可能已被浏览器清理", "error", 5000);
+    } else if (!state.wallpapers.some(function (w) { return w.id === wp.activeId; })) {
+      wp.activeId = state.wallpapers[0].id;
     }
     renderWallpaperSlots();
     syncWallpaperControls();
@@ -1122,6 +1248,10 @@
 
   function renderChat(opts) {
     opts = opts || {};
+    if (state.mdJobs) {
+      state.mdJobs.clear();
+      state.mdCallbacks.clear();
+    }
     var conv = activeConversation();
     var stick = opts.forceBottom || isNearBottom();
     showWelcomeState();
@@ -1316,6 +1446,78 @@
       "</div></article>";
   }
 
+  function initMarkdownWorker() {
+    if (!window.Worker) {
+      document.documentElement.dataset.mdWorker = "off";
+      return;
+    }
+    try {
+      state.mdWorker = new Worker("markdown-worker.js");
+      document.documentElement.dataset.mdWorker = "on";
+      state.mdWorker.onmessage = function (event) {
+        var data = event.data || {};
+        var job = state.mdCallbacks.get(data.id);
+        if (!job) return;
+        state.mdCallbacks.delete(data.id);
+        job.inFlight = false;
+        if (job.node && job.node.isConnected) {
+          if (data.error) {
+            job.node.innerHTML = window.DSMarkdown.render(job.sent || "");
+          } else {
+            job.node.innerHTML = data.html || "";
+          }
+          job.rendered = job.sent;
+          if (isNearBottom()) requestAnimationFrame(function () { scrollToBottom("auto"); });
+        }
+        if (job.latest !== job.rendered) pumpMarkdownJob(job);
+      };
+      state.mdWorker.onerror = function () {
+        // Fall back to synchronous rendering. Existing in-flight jobs will be
+        // replaced by the next streaming frame.
+        state.mdWorker = null;
+        state.mdJobs.clear();
+        state.mdCallbacks.clear();
+        document.documentElement.dataset.mdWorker = "off";
+      };
+    } catch (e) {
+      state.mdWorker = null;
+      document.documentElement.dataset.mdWorker = "off";
+    }
+  }
+
+  function pumpMarkdownJob(job) {
+    if (!state.mdWorker || job.inFlight) return;
+    if (!job.node || !job.node.isConnected) return;
+    if (job.latest === job.rendered) return;
+    job.inFlight = true;
+    job.sent = job.latest;
+    var requestId = ++state.mdSeq;
+    state.mdCallbacks.set(requestId, job);
+    try {
+      state.mdWorker.postMessage({ id: requestId, text: job.latest });
+    } catch (e) {
+      state.mdCallbacks.delete(requestId);
+      job.inFlight = false;
+      state.mdWorker = null;
+    }
+  }
+
+  function queueMarkdownRender(msg, node) {
+    if (!msg.content) return;
+    if (!state.mdWorker) {
+      node.innerHTML = window.DSMarkdown.render(msg.content);
+      return;
+    }
+    var job = state.mdJobs.get(msg.id);
+    if (!job) {
+      job = { id: msg.id, node: node, latest: "", sent: "", rendered: "", inFlight: false };
+      state.mdJobs.set(msg.id, job);
+    }
+    job.node = node;
+    job.latest = msg.content;
+    pumpMarkdownJob(job);
+  }
+
   function updateStreamingView(msg) {
     var node = document.querySelector('[data-msg-id="' + msg.id + '"]');
     if (!node) {
@@ -1328,8 +1530,8 @@
       return;
     }
     if (md) {
-      md.innerHTML = window.DSMarkdown.render(msg.content);
       md.classList.add("is-streaming");
+      queueMarkdownRender(msg, md);
     }
     var think = node.querySelector(".think-body");
     if (msg.reasoning && think) think.innerHTML = escapeHtml(msg.reasoning).replace(/\n/g, "<br>");
@@ -2595,9 +2797,9 @@
       document.body.classList.add("dialog-open");
     }
     setTimeout(function () {
+      renderWallpaperSlots();
+      syncWallpaperControls();
       if (section === "wallpaper" && els.wallpaperSection) {
-        renderWallpaperSlots();
-        syncWallpaperControls();
         els.wallpaperSection.scrollIntoView({ block: "start", behavior: "smooth" });
         return;
       }
@@ -3235,6 +3437,7 @@
     loadState();
     applyTheme();
     bindEvents();
+    initMarkdownWorker();
     syncSidebarCollapse();
     syncComposerFromActive();
     updateModeUI();
