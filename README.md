@@ -170,14 +170,15 @@ EXE 模式下写入：
 
 ## 模型与推理等级
 
-- 聊天输入框右下角可选 **Flash / Pro**：
+- 聊天输入框右下角可选 **V4.1 Flash / V4 Pro**：
   - Flash：更快，支持图像理解；
   - Pro：更强，适合复杂推理；
 - “深度思考”开关控制是否开启思考模式；开启后 Chat Completions 请求会带 `thinking: {type: "enabled"}`，关闭时带 `disabled`；
-- Agent 使用 **Pro**，输入框右下角可单独选择推理等级：
+- Agent 也可以选 **V4.1 Flash / V4 Pro**，并单独选择推理等级：
   - 关闭 / 低 / 高 / 最高，对应 `reasoning_effort: none/low/high/max`；
   - 默认“高”；
-- 这些参数通过 Chat Completions API 的 `thinking` 和 `reasoning_effort` 字段传递。
+- 这些参数通过 Chat Completions API 的 `thinking` 和 `reasoning_effort` 字段传递；
+- 当前 DeepSeek API 只提供 `deepseek-flash` 和 `deepseek-v4-pro`，没有可用的 V3.2 ID；旧 `deepseek-chat` 会被服务端路由到 V4.1 Flash，`deepseek-reasoner` 也会路由到 Flash，因此不把 V3.2 做成可选项。
 
 ## 壁纸与玻璃面板
 

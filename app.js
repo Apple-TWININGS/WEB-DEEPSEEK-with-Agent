@@ -24,6 +24,7 @@
     deepThink: false,
     webSearch: false,
     chatModel: "flash",
+    agentModel: "pro",
     agentEffort: "high",
     mode: "chat",
     sidebarCollapsed: false,
@@ -368,6 +369,7 @@
         : [];
       if (["light", "dark", "system"].indexOf(state.settings.theme) === -1) state.settings.theme = "system";
       if (["flash", "pro"].indexOf(state.settings.chatModel) === -1) state.settings.chatModel = "flash";
+      if (["flash", "pro"].indexOf(state.settings.agentModel) === -1) state.settings.agentModel = "pro";
       if (["none", "low", "high", "max"].indexOf(state.settings.agentEffort) === -1) state.settings.agentEffort = "high";
       if (state.settings.mode !== "agent") state.settings.mode = "chat";
       state.conversations = Array.isArray(raw.conversations)
@@ -2060,6 +2062,10 @@
       els.chatModelSelect.hidden = mode === "agent";
       els.chatModelSelect.value = state.settings.chatModel;
     }
+    if (els.agentModelSelect) {
+      els.agentModelSelect.hidden = mode !== "agent";
+      els.agentModelSelect.value = state.settings.agentModel;
+    }
     if (els.agentEffortSelect) {
       els.agentEffortSelect.hidden = mode !== "agent";
       els.agentEffortSelect.value = state.settings.agentEffort;
@@ -2208,8 +2214,8 @@
       demo: !!demoFlag,
       mode: mode,
       modelLabel: mode === "agent"
-        ? "Agent · Pro"
-        : ("DeepSeek " + (state.settings.chatModel === "pro" ? "Pro" : "Flash") + (state.settings.deepThink ? " · 思考" : "")),
+        ? ("Agent · " + (state.settings.agentModel === "flash" ? "V4.1 Flash" : "V4 Pro"))
+        : ("DeepSeek " + (state.settings.chatModel === "pro" ? "V4 Pro" : "V4.1 Flash") + (state.settings.deepThink ? " · 思考" : "")),
       feedback: "",
       sources: [],
       usage: null,
@@ -2456,7 +2462,7 @@
     var body = {
       runId: runId,
       messages: buildModelMessages(conv, msg.id),
-      model: "pro",
+      model: state.settings.agentModel === "flash" ? "flash" : "pro",
       reasoningEffort: state.settings.agentEffort || "high",
       workspace: conv.workspace || state.workspace.defaultPath || state.workspace.path || "",
       fullAccess: fullAccess,
@@ -3793,6 +3799,12 @@
       scheduleSave();
       toast(state.settings.chatModel === "pro" ? "已选择 DeepSeek Pro" : "已选择 DeepSeek Flash");
     });
+    els.agentModelSelect.addEventListener("change", function () {
+      state.settings.agentModel = this.value === "flash" ? "flash" : "pro";
+      updateModeUI();
+      scheduleSave();
+      toast("Agent 模型：" + (state.settings.agentModel === "flash" ? "V4.1 Flash" : "V4 Pro"));
+    });
     els.agentEffortSelect.addEventListener("change", function () {
       var level = ["none", "low", "high", "max"].indexOf(this.value) >= 0 ? this.value : "high";
       state.settings.agentEffort = level;
@@ -4073,6 +4085,7 @@
     els.thinkToggle = $("#thinkToggle");
     els.searchToggle = $("#searchToggle");
     els.chatModelSelect = $("#chatModelSelect");
+    els.agentModelSelect = $("#agentModelSelect");
     els.agentEffortSelect = $("#agentEffortSelect");
     els.sendBtn = $("#sendBtn");
     els.composerHint = $("#composerHint");
