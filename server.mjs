@@ -35,7 +35,7 @@ const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 const IMPORT_TOKEN_PATH = path.join(DATA_ROOT, "deepseek-web-token.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.2.8";
+const VERSION = "1.2.9";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -60,7 +60,7 @@ const MODEL_REASONER = MODEL_PRO;
 const MODEL_AGENT = process.env.DEEPSEEK_AGENT_MODEL || MODEL_PRO;
 const AGENT_EFFORTS = ["none", "low", "high", "max"];
 const AGENT_DEFAULT_EFFORT = "high";
-const MAX_BODY = 2 * 1024 * 1024;
+const MAX_BODY = 20 * 1024 * 1024;
 const MAX_AGENT_ROUNDS = 15;
 const MAX_TOOL_CALLS_PER_ROUND = 4;
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
@@ -1030,20 +1030,57 @@ async function readModelJson(res) {
 /* ============================================================
    Chat route
    ============================================================ */
+function normalizeMessageContent(content) {
+  if (typeof content === "string") {
+    const text = truncate(content, 48000);
+    return text.trim() ? text : "";
+  }
+  if (!Array.isArray(content)) return "";
+  const blocks = [];
+  let images = 0;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+      blocks.push({ type: "text", text: truncate(block.text, 48000) });
+    } else if (block.type === "image_url" && block.image_url && typeof block.image_url.url === "string") {
+      const url = block.image_url.url;
+      if (!/^data:image\/(jpeg|png|gif|webp);base64,/i.test(url) && !/^https?:\/\//i.test(url)) continue;
+      if (url.length > 12 * 1024 * 1024) continue;
+      if (++images > 10) break;
+      blocks.push({
+        type: "image_url",
+        image_url: { url, detail: ["low", "high", "original", "auto"].includes(block.image_url.detail) ? block.image_url.detail : "auto" },
+      });
+    }
+  }
+  return blocks.length ? blocks : "";
+}
+
 function normalizeMessages(input) {
   if (!Array.isArray(input)) return [];
   const out = [];
   for (const m of input.slice(-30)) {
     if (!m || (m.role !== "user" && m.role !== "assistant" && m.role !== "system")) continue;
-    if (typeof m.content !== "string" || !m.content.trim()) continue;
-    out.push({ role: m.role, content: truncate(m.content, 48000) });
+    const content = normalizeMessageContent(m.content);
+    if (!content) continue;
+    out.push({ role: m.role, content });
   }
   return out;
 }
 
+function contentText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((b) => b && b.type === "text").map((b) => b.text).join("\n");
+}
+
+function hasImageBlock(content) {
+  return Array.isArray(content) && content.some((b) => b && b.type === "image_url");
+}
+
 function lastUserContent(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") return messages[i].content;
+    if (messages[i].role === "user") return contentText(messages[i].content);
   }
   return "";
 }
@@ -1081,6 +1118,9 @@ async function handleChat(req, res, body) {
   const wantsPro = body.model === "pro" || body.model === "deepseek-v4-pro" || body.model === MODEL_PRO || legacyReasoner;
   const model = wantsPro ? MODEL_PRO : MODEL_FLASH;
   const deepThink = body.deepThink === true || body.thinking === true || legacyReasoner;
+  if (wantsPro && messages.some((m) => hasImageBlock(m.content))) {
+    return sendJson(res, 400, { error: "V4 Pro 不支持图片输入，请切换到 V4.1 Flash。" });
+  }
   const sse = startSSE(res);
   const controller = new AbortController();
   let clientClosed = false;
@@ -1952,13 +1992,17 @@ async function handleAgent(req, res, body) {
       return sendJson(res, 400, { error: err.message || "工作区无效。" });
     }
   }
+  const runModel = body.model === "flash" ? MODEL_FLASH : MODEL_PRO;
+  if (runModel === MODEL_PRO && messages.some((m) => hasImageBlock(m.content))) {
+    return sendJson(res, 400, { error: "V4 Pro 不支持图片输入，请把 Agent 模型切换到 V4.1 Flash。" });
+  }
   const run = {
     id: runId,
     controller: new AbortController(),
     pending: new Map(),
     startedAt: Date.now(),
     workspace: runWorkspace,
-    model: body.model === "flash" ? MODEL_FLASH : MODEL_PRO,
+    model: runModel,
     effort: normalizeEffort(body.reasoningEffort),
     fullAccess: !!(body.fullAccess === true && body.fullAccessAck === true),
   };

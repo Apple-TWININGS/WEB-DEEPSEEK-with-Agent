@@ -70,6 +70,7 @@
     streaming: null,
     pendingConfirm: null,
     attachments: [],
+    uploading: 0,
     searchQuery: "",
     saveTimer: null,
     thinkTimer: null,
@@ -79,6 +80,7 @@
     workspaceBrowsePath: "",
     previewArtifact: null,
     previewObjectUrl: null,
+    viewingImage: null,
     pendingImport: null,
     importSessions: [],
     fullAccess: { active: false, expiresAt: 0 },
@@ -286,7 +288,18 @@
           feedback: m.feedback === "up" || m.feedback === "down" ? m.feedback : "",
           sources: Array.isArray(m.sources) ? m.sources.filter(function (s) { return s && safeHref(s.url); }).slice(0, 12) : [],
           attachments: Array.isArray(m.attachments) ? m.attachments.slice(0, 8).map(function (a) {
-            return { id: a.id || uid("att"), name: String(a.name || "附件").slice(0, 160), size: Number(a.size) || 0, content: String(a.content || "").slice(0, 140000) };
+            var dataUrl = typeof a.dataUrl === "string" && /^data:image\//.test(a.dataUrl) ? a.dataUrl : "";
+            return {
+              id: a.id || uid("att"),
+              kind: a.kind === "image" ? "image" : "file",
+              name: String(a.name || "附件").slice(0, 160),
+              size: Number(a.size) || 0,
+              content: String(a.content || "").slice(0, 140000),
+              dataUrl: dataUrl.length < 4 * 1024 * 1024 ? dataUrl : "",
+              mime: String(a.mime || ""),
+              width: Number(a.width) || 0,
+              height: Number(a.height) || 0
+            };
           }) : [],
           usage: m.usage && typeof m.usage === "object" ? m.usage : null,
           agent: null
@@ -1906,11 +1919,17 @@
   }
 
   function userMessageHtml(msg) {
-    var atts = (msg.attachments || []).map(function (a) {
+    var images = (msg.attachments || []).filter(function (a) { return a.kind === "image" && a.dataUrl; });
+    var atts = (msg.attachments || []).filter(function (a) { return a.kind !== "image"; }).map(function (a) {
       return '<span class="user-attachment">' + icon("file") + escapeHtml(a.name) + "</span>";
     }).join("");
+    var imageHtml = images.map(function (a) {
+      return '<button class="user-image-btn" type="button" data-action="view-image" data-attachment-id="' +
+        escapeAttr(a.id) + '" aria-label="查看图片"><img src="' + escapeAttr(a.dataUrl) + '" alt="' + escapeAttr(a.name || "图片") + '"></button>';
+    }).join("");
     return '<article class="message is-user" data-msg-id="' + escapeAttr(msg.id) + '">' +
-      '<div class="msg-body" data-user-text>' + escapeHtml(msg.content || "") +
+      '<div class="msg-body" data-user-text>' + (msg.content ? escapeHtml(msg.content) : "") +
+      (imageHtml ? '<div class="user-images">' + imageHtml + "</div>" : "") +
       (atts ? '<div class="user-attachments">' + atts + "</div>" : "") +
       "</div>" +
       '<span class="msg-avatar user" aria-hidden="true">我</span>' +
@@ -2222,7 +2241,7 @@
     els.sendBtn.classList.remove("is-stop");
     els.sendBtn.setAttribute("aria-label", "发送消息");
     els.sendBtn.title = "发送";
-    els.sendBtn.disabled = !els.composerInput.value.trim() && !state.attachments.length;
+    els.sendBtn.disabled = state.uploading > 0 || (!els.composerInput.value.trim() && !state.attachments.length);
   }
 
   function setStreamingUI(streaming) {
@@ -2321,35 +2340,100 @@
     }
     tray.hidden = false;
     tray.innerHTML = state.attachments.map(function (a) {
-      return '<span class="attachment-chip">' + icon("file") + "<span>" + escapeHtml(a.name) + "</span>" +
+      var lead = a.kind === "image"
+        ? '<img class="attachment-thumb" src="' + escapeAttr(a.dataUrl) + '" alt="">'
+        : icon("file");
+      return '<span class="attachment-chip' + (a.kind === "image" ? " is-image" : "") + '">' + lead +
+        "<span>" + escapeHtml(a.name) + "</span>" +
         '<button type="button" data-remove-attachment="' + escapeAttr(a.id) + '" aria-label="移除附件">' + icon("x") + "</button></span>";
     }).join("");
     updateSendState();
+  }
+
+  function readImageFile(file) {
+    return new Promise(function (resolve, reject) {
+      if (!/^image\/(png|jpe?g|webp|gif)$/i.test(file.type || "")) {
+        reject(new Error("只支持 PNG / JPEG / WebP / GIF 图片"));
+        return;
+      }
+      if (file.size > 12 * 1024 * 1024) {
+        reject(new Error("图片超过 12 MB"));
+        return;
+      }
+      var objectUrl = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var maxSide = 1600;
+          var scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+          var width = Math.max(1, Math.round(img.naturalWidth * scale));
+          var height = Math.max(1, Math.round(img.naturalHeight * scale));
+          var canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          var ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob(function (blob) {
+            URL.revokeObjectURL(objectUrl);
+            if (!blob) { reject(new Error("图片压缩失败")); return; }
+            var reader = new FileReader();
+            reader.onload = function () {
+              resolve({
+                id: uid("att"), kind: "image", name: file.name || "图片",
+                size: blob.size, mime: "image/jpeg", dataUrl: String(reader.result || ""),
+                width: width, height: height, content: ""
+              });
+            };
+            reader.onerror = function () { reject(new Error("读取图片失败")); };
+            reader.readAsDataURL(blob);
+          }, "image/jpeg", 0.82);
+        } catch (e) {
+          URL.revokeObjectURL(objectUrl);
+          reject(e);
+        }
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("图片格式无法读取"));
+      };
+      img.src = objectUrl;
+    });
   }
 
   async function addFiles(fileList) {
     var files = Array.prototype.slice.call(fileList || []);
     if (!files.length) return;
     if (state.attachments.length >= 5) {
-      toast("最多添加 5 个文本附件", "error");
+      toast("最多添加 5 个附件", "error");
       return;
     }
+    state.uploading++;
+    updateSendState();
     for (var i = 0; i < files.length; i++) {
       if (state.attachments.length >= 5) break;
       var f = files[i];
-      if (f.size > 140000) {
-        toast("「" + f.name + "」超过 140 KB，未添加", "error");
-        continue;
-      }
       try {
-        var text = await f.text();
-        state.attachments.push({ id: uid("att"), name: f.name, size: f.size, content: text.slice(0, 140000) });
+        if (/^image\//.test(f.type || "")) {
+          var image = await readImageFile(f);
+          state.attachments.push(image);
+        } else {
+          if (f.size > 140000) {
+            toast("「" + f.name + "」超过 140 KB，未添加", "error");
+            continue;
+          }
+          var text = await f.text();
+          state.attachments.push({ id: uid("att"), kind: "file", name: f.name, size: f.size, content: text.slice(0, 140000) });
+        }
       } catch (e) {
-        toast("读取「" + f.name + "」失败", "error");
+        toast("读取「" + f.name + "」失败：" + e.message, "error");
       }
     }
+    state.uploading = Math.max(0, state.uploading - 1);
     els.fileInput.value = "";
     updateAttachmentTray();
+    updateSendState();
   }
 
   /* ============================================================
@@ -2362,12 +2446,22 @@
     var total = 0;
     return msgs.map(function (m) {
       var content = m.content || "";
+      var images = [];
       (m.attachments || []).forEach(function (a) {
-        content += "\n\n<file name=\"" + a.name + "\">\n" + a.content + "\n</file>";
+        if (a.kind === "image" && a.dataUrl) images.push(a);
+        else content += "\n\n<file name=\"" + a.name + "\">\n" + a.content + "\n</file>";
       });
       if (content.length > 32000) content = content.slice(0, 32000) + "\n…（已截断）";
       if (total + content.length > 110000) content = content.slice(0, 16000);
       total += content.length;
+      if (images.length) {
+        var blocks = [];
+        if (content.trim()) blocks.push({ type: "text", text: content });
+        images.forEach(function (a) {
+          blocks.push({ type: "image_url", image_url: { url: a.dataUrl, detail: "auto" } });
+        });
+        return { role: m.role, content: blocks };
+      }
       return { role: m.role, content: content };
     });
   }
@@ -2385,7 +2479,11 @@
       reasoning: "",
       createdAt: now(),
       attachments: attachments.map(function (a) {
-        return { id: a.id, name: a.name, size: a.size, content: a.content };
+        return {
+          id: a.id, kind: a.kind || "file", name: a.name, size: a.size,
+          content: a.content || "", dataUrl: a.dataUrl || "", mime: a.mime || "",
+          width: a.width || 0, height: a.height || 0
+        };
       }),
       sources: []
     };
@@ -2441,7 +2539,16 @@
     var attachments = state.attachments.slice();
     if (!text && !attachments.length) return;
     if (!text && attachments.length) text = "请阅读附件并帮我分析。";
+    var hasImage = attachments.some(function (a) { return a.kind === "image"; });
     var mode = state.settings.mode === "agent" ? "agent" : "chat";
+    if (hasImage && mode === "chat" && state.settings.chatModel === "pro") {
+      toast("V4 Pro 不支持图片，请把聊天模型切到 V4.1 Flash", "error", 5000);
+      return;
+    }
+    if (hasImage && mode === "agent" && state.settings.agentModel === "pro") {
+      toast("V4 Pro 不支持图片，请把 Agent 模型切到 V4.1 Flash", "error", 5000);
+      return;
+    }
     var conv = activeConversation();
     conv.mode = mode;
     conv.draft = "";
@@ -3562,6 +3669,32 @@
     }
   }
 
+  function openImageViewer(msgId, attachmentId) {
+    var conv = activeConversation();
+    var msg = conv.messages.find(function (m) { return m.id === msgId; });
+    var att = msg && (msg.attachments || []).find(function (a) { return a.id === attachmentId && a.dataUrl; });
+    if (!att) return;
+    state.viewingImage = att;
+    els.imageViewerTitle.textContent = att.name || "图片";
+    els.imageViewerImg.src = att.dataUrl;
+    els.imageViewerImg.alt = att.name || "图片";
+    if (!els.imageViewerDialog.open) {
+      els.imageViewerDialog.showModal();
+      document.body.classList.add("dialog-open");
+    }
+  }
+
+  function downloadViewingImage() {
+    var att = state.viewingImage;
+    if (!att || !att.dataUrl) return;
+    var a = document.createElement("a");
+    a.href = att.dataUrl;
+    a.download = att.name || "image.jpg";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
   /* ============================================================
      Context insights
      ============================================================ */
@@ -3578,7 +3711,7 @@
   function openContextInsights() {
     var conv = activeConversation();
     var isAgent = conv.mode === "agent";
-    var parts = { sys: isAgent ? 3600 : 1800, tools: isAgent ? 2400 : 0, user: 0, assistant: 0, reason: 0, attach: 0, tool: 0 };
+    var parts = { sys: isAgent ? 1800 : 0, tools: isAgent ? 2400 : 0, user: 0, assistant: 0, reason: 0, attach: 0, tool: 0 };
     var toolCalls = 0;
     var artifacts = {};
     var sourceCount = 0;
@@ -3677,7 +3810,7 @@
       }).join("") + "</div>";
     }
 
-    html += '<p class="ctx-note">Token 为本地字符估算，和实际计费会有差异；系统提示、工具 schema 为固定基线。' +
+    html += '<p class="ctx-note">Token 为本地字符估算，和实际计费会有差异；普通聊天不添加 system prompt，Agent 的系统提示/工具 schema 为估算基线。' +
       (sourceCount ? " 已计入 " + sourceCount + " 条联网来源。" : "") + "</p>";
     if (!conv.messages.length) {
       html = '<div class="ctx-empty">这个对话还没有消息。发一条消息后，这里会显示上下文组成和增长。</div>' + html;
@@ -3954,6 +4087,7 @@
     els.workspaceDialog.addEventListener("click", function (e) {
       if (e.target === els.workspaceDialog) closeWorkspaceDialog();
     });
+    els.imageViewerDownload.addEventListener("click", downloadViewingImage);
     els.contextInsightsBtn.addEventListener("click", openContextInsights);
     els.importTokenSave.addEventListener("click", saveImportToken);
     els.importTokenClear.addEventListener("click", clearImportToken);
@@ -4165,6 +4299,21 @@
     });
     els.attachBtn.addEventListener("click", function () { els.fileInput.click(); });
     els.fileInput.addEventListener("change", function () { addFiles(els.fileInput.files); });
+    document.addEventListener("paste", function (e) {
+      if (!(e.target instanceof Element) || !e.target.closest(".composer") || !e.clipboardData) return;
+      var files = [];
+      for (var i = 0; i < e.clipboardData.items.length; i++) {
+        var item = e.clipboardData.items[i];
+        if (item.kind === "file" && /^image\//.test(item.type || "")) {
+          var file = item.getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      if (files.length) {
+        e.preventDefault();
+        addFiles(files);
+      }
+    });
     els.attachmentTray.addEventListener("click", function (e) {
       var btn = e.target.closest("[data-remove-attachment]");
       if (!btn) return;
@@ -4201,6 +4350,7 @@
       else if (action === "feedback-up") setFeedback(msgId, "up");
       else if (action === "feedback-down") setFeedback(msgId, "down");
       else if (action === "preview-artifact") openArtifactPreview(msgId, Number(actionBtn.dataset.artifactIndex));
+      else if (action === "view-image") openImageViewer(msgId, actionBtn.dataset.attachmentId);
       else if (action === "toggle-trace") {
         var conv = activeConversation();
         var msg = conv.messages.find(function (m) { return m.id === msgId; });
@@ -4358,6 +4508,10 @@
     els.lanHint = $("#lanHint");
     els.copyLanUrl = $("#copyLanUrl");
     els.logoutBtn = $("#logoutBtn");
+    els.imageViewerDialog = $("#imageViewerDialog");
+    els.imageViewerImg = $("#imageViewerImg");
+    els.imageViewerTitle = $("#imageViewerTitle");
+    els.imageViewerDownload = $("#imageViewerDownload");
     els.contextInsightsDialog = $("#contextInsightsDialog");
     els.contextInsightsBody = $("#contextInsightsBody");
     els.contextInsightsBtn = $("#contextInsightsBtn");

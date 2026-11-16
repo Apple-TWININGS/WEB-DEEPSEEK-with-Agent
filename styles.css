@@ -1746,6 +1746,8 @@ body.has-wallpaper .dialog::backdrop { background: rgba(9, 13, 22, .32); }
 .attachment-chip button { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; }
 .attachment-chip button:hover { color: var(--danger); background: var(--danger-soft); }
 .attachment-chip button svg { width: 10px; height: 10px; }
+.attachment-chip.is-image { padding: 3px 6px 3px 3px; }
+.attachment-chip .attachment-thumb { width: 22px; height: 22px; border-radius: 4px; object-fit: cover; flex: none; }
 
 .composer-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
 .composer-tools { display: flex; align-items: center; gap: 5px; min-width: 0; flex-wrap: wrap; }
@@ -2839,6 +2841,33 @@ body.dialog-open .toast-stack { top: 76px; bottom: auto; }
 }
 [data-theme="dark"] .user-attachment { background: rgba(255, 255, 255, .05); }
 .user-attachment svg { width: 10px; height: 10px; flex: none; }
+.user-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.user-image-btn {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.user-image-btn img { display: block; width: 128px; height: 96px; object-fit: cover; }
+.user-image-btn:hover { border-color: var(--accent); }
+
+.image-viewer-dialog { width: min(900px, calc(100vw - 30px)); }
+.image-viewer-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 22px;
+  padding: 10px;
+  max-height: min(66vh, 700px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #111;
+}
+.image-viewer-body img { display: block; max-width: 100%; max-height: 62vh; height: auto; }
 
 .thinking-state {
   display: flex;

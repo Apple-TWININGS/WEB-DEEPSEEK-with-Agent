@@ -258,7 +258,7 @@
               <button class="tool-btn attach-btn" id="attachBtn" type="button" aria-label="添加文本附件" title="添加文本附件">
                 <svg><use href="#i-paperclip"/></svg>
               </button>
-              <input id="fileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.log,.js,.ts,.tsx,.jsx,.py,.html,.css,.yaml,.yml,.xml,.sql,.sh" multiple hidden>
+              <input id="fileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.log,.js,.ts,.tsx,.jsx,.py,.html,.css,.yaml,.yml,.xml,.sql,.sh,image/png,image/jpeg,image/webp,image/gif" multiple hidden>
 
               <div class="mode-tools" id="chatTools">
                 <button class="tool-btn tool-toggle" id="thinkToggle" type="button" aria-pressed="false" title="深度思考">
@@ -520,11 +520,28 @@
       <section class="settings-section about-section">
         <div class="about-brand">
           <span class="brand-mark small"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
-          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.8</small></div>
+          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.9</small></div>
         </div>
         <p>界面与 Agent 工程参考 <em>Professional Agent</em> 的工具循环、diff 审批、备份恢复与密钥管理设计。聊天是默认入口，Agent 只在需要时出现。</p>
         <div class="about-badges"><span>Chat first</span><span>Local-first</span><span>Human in the loop</span></div>
       </section>
+    </div>
+  </dialog>
+
+  <dialog class="dialog image-viewer-dialog" id="imageViewerDialog" aria-labelledby="imageViewerTitle">
+    <div class="dialog-head">
+      <div>
+        <p class="dialog-kicker">IMAGE · VIEWER</p>
+        <h2 id="imageViewerTitle">图片</h2>
+      </div>
+      <button class="icon-btn dialog-close" type="button" data-close-dialog="imageViewerDialog" aria-label="关闭">
+        <svg><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="image-viewer-body"><img id="imageViewerImg" alt="图片预览"></div>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" type="button" data-close-dialog="imageViewerDialog">关闭</button>
+      <button class="btn btn-primary" id="imageViewerDownload" type="button"><svg><use href="#i-download"/></svg>下载图片</button>
     </div>
   </dialog>
 
