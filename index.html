@@ -160,6 +160,9 @@
             <span class="connection-dot"></span>
             <span id="connectionText">检测中</span>
           </button>
+          <button class="icon-btn" id="contextInsightsBtn" type="button" aria-label="上下文洞察" title="上下文洞察">
+            <svg><use href="#i-brain"/></svg>
+          </button>
           <button class="icon-btn" id="wallpaperBtn" type="button" aria-label="壁纸与玻璃效果" title="壁纸与玻璃效果">
             <svg><use href="#i-image"/></svg>
           </button>
@@ -517,11 +520,27 @@
       <section class="settings-section about-section">
         <div class="about-brand">
           <span class="brand-mark small"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
-          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.7</small></div>
+          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.2.8</small></div>
         </div>
         <p>界面与 Agent 工程参考 <em>Professional Agent</em> 的工具循环、diff 审批、备份恢复与密钥管理设计。聊天是默认入口，Agent 只在需要时出现。</p>
         <div class="about-badges"><span>Chat first</span><span>Local-first</span><span>Human in the loop</span></div>
       </section>
+    </div>
+  </dialog>
+
+  <dialog class="dialog context-insights-dialog" id="contextInsightsDialog" aria-labelledby="contextInsightsTitle">
+    <div class="dialog-head">
+      <div>
+        <p class="dialog-kicker">CONTEXT · INSIGHTS</p>
+        <h2 id="contextInsightsTitle">上下文洞察</h2>
+      </div>
+      <button class="icon-btn dialog-close" type="button" data-close-dialog="contextInsightsDialog" aria-label="关闭">
+        <svg><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="context-insights-body" id="contextInsightsBody"></div>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" type="button" data-close-dialog="contextInsightsDialog">关闭</button>
     </div>
   </dialog>
 

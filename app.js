@@ -3563,6 +3563,133 @@
   }
 
   /* ============================================================
+     Context insights
+     ============================================================ */
+  function ctxTokens(text) {
+    return Math.max(0, Math.ceil(String(text || "").length / 2.2));
+  }
+
+  function fmtTokenCount(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+    return String(n);
+  }
+
+  function openContextInsights() {
+    var conv = activeConversation();
+    var isAgent = conv.mode === "agent";
+    var parts = { sys: isAgent ? 3600 : 1800, tools: isAgent ? 2400 : 0, user: 0, assistant: 0, reason: 0, attach: 0, tool: 0 };
+    var toolCalls = 0;
+    var artifacts = {};
+    var sourceCount = 0;
+    var userCount = 0;
+    var assistantCount = 0;
+    var startedAt = 0;
+    var endedAt = 0;
+
+    (conv.messages || []).forEach(function (msg) {
+      if (!startedAt) startedAt = msg.createdAt || 0;
+      if (msg.createdAt) endedAt = Math.max(endedAt, msg.createdAt);
+      if (msg.role === "user") {
+        userCount++;
+        parts.user += ctxTokens(msg.content);
+        (msg.attachments || []).forEach(function (a) { parts.attach += ctxTokens(a.content); });
+      } else {
+        assistantCount++;
+        parts.assistant += ctxTokens(msg.content);
+        parts.reason += ctxTokens(msg.reasoning);
+        (msg.sources || []).forEach(function (s) {
+          sourceCount++;
+          parts.tool += ctxTokens((s.title || "") + " " + (s.snippet || ""));
+        });
+        if (msg.agent) {
+          (msg.agent.steps || []).forEach(function (step) {
+            toolCalls++;
+            parts.tool += ctxTokens((step.title || "") + " " + (step.detail || "") + " " + (step.summary || ""));
+          });
+          (msg.agent.artifacts || []).forEach(function (a) { artifacts[a.path || a.name] = true; });
+        }
+      }
+    });
+
+    var total = parts.sys + parts.tools + parts.user + parts.assistant + parts.reason + parts.attach + parts.tool;
+    var windowSize = 1048576;
+    var percent = total / windowSize * 100;
+    var model = isAgent
+      ? ("V4 Pro · " + ({ none: "推理关", low: "推理低", high: "推理高", max: "推理最高" })[state.settings.agentEffort || "high"])
+      : ((state.settings.chatModel === "pro" ? "V4 Pro" : "V4.1 Flash") + (state.settings.deepThink ? " · 深度思考" : ""));
+    if (isAgent && state.settings.agentModel === "flash") model = model.replace("V4 Pro", "V4.1 Flash");
+    var artifactCount = Object.keys(artifacts).length;
+    var duration = startedAt && endedAt ? Math.max(0, endedAt - startedAt) : 0;
+
+    var segments = [
+      ["sys", "系统提示", parts.sys],
+      ["tools", "工具定义", parts.tools],
+      ["user", "用户消息", parts.user],
+      ["assistant", "助手回复", parts.assistant],
+      ["reason", "推理 / 思考", parts.reason],
+      ["attach", "附件", parts.attach],
+      ["tool", "工具结果 / 来源", parts.tool],
+    ].filter(function (item) { return item[2] > 0; });
+
+    var html = '<div class="ctx-summary"><div><strong>' + fmtTokenCount(total) + " tokens</strong><small>" +
+      escapeHtml(model) + " · 上下文窗口约 1M · 估算值</small></div><span class=\"ctx-percent\">" +
+      (percent < 0.01 ? "&lt;0.01" : percent.toFixed(2)) + "%</span></div>" +
+      '<div class="ctx-stack">' + segments.map(function (item) {
+        return '<span class="ctx-seg ' + item[0] + '" style="width:' + Math.max(1.5, item[2] / total * 100) + '%"></span>';
+      }).join("") + "</div>" +
+      '<div class="ctx-legend">' + segments.map(function (item) {
+        return '<span class="ctx-legend-item"><i class="ctx-dot ' + item[0] + '"></i>' + item[1] + " " + fmtTokenCount(item[2]) + "</span>";
+      }).join("") + "</div>" +
+      '<div class="ctx-kpis">' +
+        '<div class="ctx-kpi"><strong>' + conv.messages.length + '</strong><small>消息</small></div>' +
+        '<div class="ctx-kpi"><strong>' + toolCalls + '</strong><small>Agent 工具调用</small></div>' +
+        '<div class="ctx-kpi"><strong>' + artifactCount + '</strong><small>产出文件</small></div>' +
+        '<div class="ctx-kpi"><strong>' + (duration ? fmtDuration(duration) : "—") + '</strong><small>对话跨度</small></div>' +
+      "</div>" +
+      '<div class="ctx-section-title">上下文组成</div><div class="ctx-breakdown">' +
+      segments.map(function (item) {
+        var pct = item[2] / total * 100;
+        return '<div class="ctx-row"><span>' + item[1] + '</span><div class="ctx-track"><div class="ctx-fill ' + item[0] +
+          '" style="width:' + Math.max(1, pct) + '%"></div></div><code>' + fmtTokenCount(item[2]) + "</code></div>";
+      }).join("") + "</div>";
+
+    var trends = [];
+    var cumulative = parts.sys + parts.tools;
+    (conv.messages || []).forEach(function (msg) {
+      if (msg.role === "user") {
+        cumulative += ctxTokens(msg.content);
+        (msg.attachments || []).forEach(function (a) { cumulative += ctxTokens(a.content); });
+      } else {
+        cumulative += ctxTokens(msg.content) + ctxTokens(msg.reasoning);
+        if (msg.agent) (msg.agent.steps || []).forEach(function (step) {
+          cumulative += ctxTokens((step.summary || "") + (step.detail || ""));
+        });
+        trends.push(cumulative);
+      }
+    });
+    trends = trends.slice(-14);
+    if (trends.length) {
+      var maxTrend = Math.max.apply(null, trends) || 1;
+      html += '<div class="ctx-section-title">上下文增长</div><div class="ctx-trend">' + trends.map(function (value) {
+        return '<div class="ctx-bar-wrap" title="' + fmtTokenCount(value) + ' tokens"><div class="ctx-bar" style="height:' +
+          Math.max(4, value / maxTrend * 100) + '%"></div></div>';
+      }).join("") + "</div>";
+    }
+
+    html += '<p class="ctx-note">Token 为本地字符估算，和实际计费会有差异；系统提示、工具 schema 为固定基线。' +
+      (sourceCount ? " 已计入 " + sourceCount + " 条联网来源。" : "") + "</p>";
+    if (!conv.messages.length) {
+      html = '<div class="ctx-empty">这个对话还没有消息。发一条消息后，这里会显示上下文组成和增长。</div>' + html;
+    }
+    els.contextInsightsBody.innerHTML = html;
+    if (!els.contextInsightsDialog.open) {
+      els.contextInsightsDialog.showModal();
+      document.body.classList.add("dialog-open");
+    }
+  }
+
+  /* ============================================================
      Settings / dialogs
      ============================================================ */
   function openSettings(section) {
@@ -3827,6 +3954,7 @@
     els.workspaceDialog.addEventListener("click", function (e) {
       if (e.target === els.workspaceDialog) closeWorkspaceDialog();
     });
+    els.contextInsightsBtn.addEventListener("click", openContextInsights);
     els.importTokenSave.addEventListener("click", saveImportToken);
     els.importTokenClear.addEventListener("click", clearImportToken);
     els.importFetchSessions.addEventListener("click", fetchImportSessions);
@@ -4230,6 +4358,9 @@
     els.lanHint = $("#lanHint");
     els.copyLanUrl = $("#copyLanUrl");
     els.logoutBtn = $("#logoutBtn");
+    els.contextInsightsDialog = $("#contextInsightsDialog");
+    els.contextInsightsBody = $("#contextInsightsBody");
+    els.contextInsightsBtn = $("#contextInsightsBtn");
     els.artifactPreviewDialog = $("#artifactPreviewDialog");
     els.artifactPreviewTitle = $("#artifactPreviewTitle");
     els.artifactPreviewName = $("#artifactPreviewName");
