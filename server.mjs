@@ -35,7 +35,7 @@ const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 const IMPORT_TOKEN_PATH = path.join(DATA_ROOT, "deepseek-web-token.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.2.9";
+const VERSION = "1.3.0";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -106,6 +106,52 @@ const agentRuns = new Map();
 function log(...args) {
   const time = new Date().toISOString().slice(11, 19);
   console.log(`[${time}]`, ...args);
+}
+
+const PICK_FOLDER_SCRIPT = [
+  "Add-Type -AssemblyName System.Windows.Forms",
+  "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+  "$d = New-Object System.Windows.Forms.FolderBrowserDialog",
+  "$d.Description = '选择 Agent 工作区'",
+  "$d.ShowNewFolderButton = $true",
+  "try { $d.UseDescriptionForTitle = $true } catch {}",
+  "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }",
+].join("; ");
+
+function pickNativeFolder() {
+  if (process.platform !== "win32") {
+    return Promise.resolve({ unsupported: true });
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", [
+      "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", PICK_FOLDER_SCRIPT,
+    ], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch {}
+      reject(Object.assign(new Error("文件夹选择超时。"), { status: 504 }));
+    }, 180000);
+    child.stdout.on("data", (chunk) => { out += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { err += chunk.toString("utf8"); });
+    child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const selected = out.trim().split(/\r?\n/).filter(Boolean).pop() || "";
+      if (!selected) return resolve({ cancelled: true });
+      resolve({ path: selected });
+    });
+  });
 }
 
 function normalizeEffort(value, fallback = AGENT_DEFAULT_EFFORT) {
@@ -2220,6 +2266,22 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/workspace") {
       return sendJson(res, 200, Object.assign({ ok: true }, workspaceInfo()));
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workspace/pick") {
+      try {
+        const picked = await pickNativeFolder();
+        if (picked.unsupported) {
+          return sendJson(res, 501, { error: "当前系统不支持原生文件夹选择。", unsupported: true });
+        }
+        if (picked.cancelled || !picked.path) {
+          return sendJson(res, 200, { ok: true, cancelled: true });
+        }
+        const target = validateWorkspaceTarget(picked.path);
+        return sendJson(res, 200, { ok: true, path: target });
+      } catch (err) {
+        return sendJson(res, err.status || 500, { error: err.message || "打开文件夹选择器失败。" });
+      }
     }
 
     if (req.method === "POST" && url.pathname === "/api/workspace/check") {

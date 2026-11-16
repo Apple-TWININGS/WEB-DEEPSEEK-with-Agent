@@ -78,6 +78,8 @@
     lan: { lan: false, url: "", addresses: [], authRequired: false },
     workspace: { path: "", defaultPath: "", exists: false },
     workspaceBrowsePath: "",
+    workspacePickPurpose: "new",
+    workspacePicking: false,
     previewArtifact: null,
     previewObjectUrl: null,
     viewingImage: null,
@@ -1184,6 +1186,15 @@
     if (els.workspaceHint) {
       els.workspaceHint.textContent = "只影响当前对话；Agent 只能访问此目录下的相对路径，写文件仍会先展示 diff。";
     }
+    if (els.workspaceChip) {
+      var conv = state.conversations.find(function (c) { return c.id === state.activeId; });
+      var agent = !!conv && conv.mode === "agent";
+      els.workspaceChip.hidden = !agent;
+      els.workspaceChip.title = path || "选择 Agent 工作区";
+      if (els.workspaceChipText) {
+        els.workspaceChipText.textContent = path ? path.split(/[\\/]/).filter(Boolean).pop() : "工作区";
+      }
+    }
   }
 
   async function loadWorkspaceInfo() {
@@ -1204,21 +1215,119 @@
   function closeWorkspaceDialog() {
     var hadPending = !!state.pendingImport;
     state.pendingImport = null;
+    state.workspacePickPurpose = "new";
     if (els.workspaceDialog && els.workspaceDialog.open) closeDialog(els.workspaceDialog);
     if (hadPending) toast("已取消导入");
   }
 
-  async function openWorkspaceDialog() {
+  async function openWorkspaceDialog(purpose) {
     if (state.streaming) {
       toast("请先停止当前 Agent 任务", "error");
       return;
+    }
+    state.workspacePickPurpose = purpose || "new";
+    if (els.workspaceDialogTitle) {
+      els.workspaceDialogTitle.textContent = state.workspacePickPurpose === "change"
+        ? "更换当前对话工作区"
+        : (state.workspacePickPurpose === "import" ? "选择导入 Agent 对话的工作区" : "选择新 Agent 对话的工作区");
+    }
+    if (els.workspaceSelect) {
+      els.workspaceSelect.textContent = state.workspacePickPurpose === "change" ? "使用此文件夹" : "创建 Agent 对话";
     }
     els.workspaceError.textContent = "";
     if (!els.workspaceDialog.open) {
       els.workspaceDialog.showModal();
       document.body.classList.add("dialog-open");
     }
-    await browseWorkspace(state.workspace.defaultPath || state.workspace.path || "");
+    var start = state.workspacePickPurpose === "change"
+      ? (activeConversationWorkspace() || state.workspace.path)
+      : (state.workspace.defaultPath || state.workspace.path || "");
+    await browseWorkspace(start);
+  }
+
+  function createAgentConversation(workspace, pending) {
+    disableFullAccess(true);
+    var conv = makeConversation("agent");
+    conv.workspace = workspace;
+    if (pending) {
+      conv.title = pending.title;
+      conv.messages = pending.messages;
+      conv.hasAgent = true;
+      state.pendingImport = null;
+    }
+    state.conversations.unshift(conv);
+    state.activeId = conv.id;
+    state.settings.mode = "agent";
+    state.attachments = [];
+    syncComposerFromActive();
+    updateModeUI();
+    renderWorkspaceInfo();
+    renderSidebar();
+    renderChat({ forceBottom: true });
+    scheduleSave();
+    toast(pending ? "已导入为 Agent 对话" : "Agent 对话已创建", "success");
+    setTimeout(function () { els.composerInput.focus(); }, 30);
+    return conv;
+  }
+
+  async function applyWorkspaceChoice(path, purpose) {
+    if (!path) return;
+    if (purpose === "change") {
+      var conv = state.conversations.find(function (c) { return c.id === state.activeId; });
+      if (!conv || conv.mode !== "agent") return;
+      disableFullAccess(true);
+      conv.workspace = path;
+      conv.updatedAt = now();
+      renderWorkspaceInfo();
+      scheduleSave();
+      toast("当前对话工作区已更新", "success");
+      return;
+    }
+    var pending = state.pendingImport;
+    closeWorkspaceDialog();
+    createAgentConversation(path, purpose === "import" ? pending : null);
+  }
+
+  async function pickWorkspace(purpose) {
+    purpose = purpose || "new";
+    if (state.streaming) {
+      toast("请先停止当前 Agent 任务", "error");
+      return;
+    }
+    if (state.workspacePicking) return;
+    var remote = state.lan && state.lan.lan && !/^(127\.|localhost)/.test(location.hostname);
+    if (window.innerWidth <= 720 || remote) {
+      await openWorkspaceDialog(purpose);
+      return;
+    }
+    state.workspacePicking = true;
+    state.workspacePickPurpose = purpose;
+    var toastId = toast("请在弹出的文件夹窗口中选择工作区…");
+    try {
+      var res = await fetch("/api/workspace/pick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      if (res.status === 401) { showLoginScreen(); return; }
+      var data = await res.json().catch(function () { return {}; });
+      if (res.status === 501) {
+        await openWorkspaceDialog(purpose);
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || "打开文件夹选择器失败");
+      if (data.cancelled) {
+        state.workspacePickPurpose = "new";
+        toast("已取消选择工作区");
+        return;
+      }
+      await applyWorkspaceChoice(data.path, purpose);
+    } catch (e) {
+      toast(friendlyError(e), "error", 5000);
+      await openWorkspaceDialog(purpose);
+    } finally {
+      state.workspacePicking = false;
+    }
   }
 
   async function browseWorkspace(targetPath) {
@@ -1275,29 +1384,23 @@
       }
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) throw new Error(data.error || "切换失败");
-      disableFullAccess(true);
-      var pending = state.pendingImport;
-      var conv = makeConversation("agent");
-      conv.workspace = data.path || state.workspaceBrowsePath;
-      if (pending) {
-        conv.title = pending.title;
-        conv.messages = pending.messages;
-        conv.hasAgent = true;
-        state.pendingImport = null;
+      var purpose = state.workspacePickPurpose;
+      if (purpose === "change") {
+        var conv = state.conversations.find(function (c) { return c.id === state.activeId; });
+        if (!conv || conv.mode !== "agent") return;
+        disableFullAccess(true);
+        conv.workspace = data.path || state.workspaceBrowsePath;
+        conv.updatedAt = now();
+        closeWorkspaceDialog();
+        renderWorkspaceInfo();
+        scheduleSave();
+        toast("当前对话工作区已更新", "success");
+        return;
       }
-      state.conversations.unshift(conv);
-      state.activeId = conv.id;
-      state.settings.mode = "agent";
-      state.attachments = [];
+      var pending = state.pendingImport;
+      var workspace = data.path || state.workspaceBrowsePath;
       closeWorkspaceDialog();
-      syncComposerFromActive();
-      updateModeUI();
-      renderWorkspaceInfo();
-      renderSidebar();
-      renderChat({ forceBottom: true });
-      scheduleSave();
-      toast(pending ? "已导入为 Agent 对话" : "Agent 对话已创建", "success");
-      setTimeout(function () { els.composerInput.focus(); }, 30);
+      createAgentConversation(workspace, purpose === "import" ? pending : null);
     } catch (e) {
       els.workspaceError.textContent = friendlyError(e);
       els.workspaceSelect.disabled = false;
@@ -1478,7 +1581,7 @@
       closeDialog(els.settingsDialog);
       if (mode === "agent") {
         state.pendingImport = { title: session.title || "DeepSeek 导入", messages: messages };
-        await openWorkspaceDialog();
+        await pickWorkspace("import");
       } else {
         createImportedConversation(session.title || "DeepSeek 导入", messages, "chat");
         toast("已导入为普通对话", "success");
@@ -4018,7 +4121,8 @@
   function bindEvents() {
     /* Sidebar */
     els.newChatBtn.addEventListener("click", function () { newChat("chat"); });
-    els.newAgentBtn.addEventListener("click", openWorkspaceDialog);
+    els.newAgentBtn.addEventListener("click", function () { pickWorkspace("new"); });
+    els.workspaceChip.addEventListener("click", function () { pickWorkspace("change"); });
     els.collapseBtn.addEventListener("click", function () {
       state.settings.sidebarCollapsed = !document.getElementById("appShell").classList.contains("is-collapsed");
       syncSidebarCollapse();
@@ -4055,7 +4159,7 @@
         setActiveConversation(item.dataset.convId);
       }
     });
-    els.agentEntry.addEventListener("click", openWorkspaceDialog);
+    els.agentEntry.addEventListener("click", function () { pickWorkspace("new"); });
     els.accountBtn.addEventListener("click", openSettings);
     els.settingsBtn.addEventListener("click", openSettings);
     els.mobileMenuBtn.addEventListener("click", openSidebar);
@@ -4232,7 +4336,7 @@
       var cta = e.target.closest("#agentCta");
       if (cta) {
         if (state.settings.mode === "agent") newChat("chat");
-        else openWorkspaceDialog();
+        else pickWorkspace("new");
       }
     });
 
@@ -4523,7 +4627,10 @@
     els.artifactPreviewBody = $("#artifactPreviewBody");
     els.artifactDownloadBtn = $("#artifactDownloadBtn");
     els.artifactRevealBtn = $("#artifactRevealBtn");
+    els.workspaceChip = $("#workspaceChip");
+    els.workspaceChipText = $("#workspaceChipText");
     els.workspaceDialog = $("#workspaceDialog");
+    els.workspaceDialogTitle = $("#workspaceDialogTitle");
     els.workspaceUp = $("#workspaceUp");
     els.workspaceBrowsePath = $("#workspaceBrowsePath");
     els.workspaceList = $("#workspaceList");
