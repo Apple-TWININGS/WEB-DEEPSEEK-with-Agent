@@ -186,7 +186,8 @@ EXE 模式下写入：
   - Pro：更强，适合复杂推理，但**不支持图片输入**；
 - 附件按钮可选 PNG / JPEG / WebP / GIF；也支持在输入框里直接粘贴图片；
 - 图片会在浏览器内压缩到最长边 1600px，点击消息里的缩略图可全屏预览/下载；
-- 图片配合 Pro 会被阻止并提示切换到 Flash；Agent 也遵循同一规则。
+- 图片配合 Pro 会被阻止并提示切换到 Flash；Agent 也遵循同一规则；
+- 深度思考预算耗尽时只保留思考过程并明确报错，不会把思考内容伪装成最终回答；长回答的思考预算已提高到 32K。
 - “深度思考”开关控制是否开启思考模式；开启后 Chat Completions 请求会带 `thinking: {type: "enabled"}`，关闭时带 `disabled`；
 - Agent 也可以选 **V4.1 Flash / V4 Pro**，并单独选择推理等级：
   - 关闭 / 低 / 高 / 最高，对应 `reasoning_effort: none/low/high/max`；

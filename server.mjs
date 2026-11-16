@@ -35,7 +35,7 @@ const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 const IMPORT_TOKEN_PATH = path.join(DATA_ROOT, "deepseek-web-token.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.3.0";
+const VERSION = "1.3.1";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -1186,7 +1186,7 @@ async function handleChat(req, res, body) {
       model,
       messages: finalMessages,
       stream: true,
-      max_tokens: deepThink ? 8192 : 4096,
+      max_tokens: deepThink ? 32768 : 8192,
       ...reasoningPayload(deepThink ? "high" : "none"),
     };
     if (!deepThink) payload.temperature = 0.7;
@@ -1198,11 +1198,10 @@ async function handleChat(req, res, body) {
     });
 
     if (!result.content.trim()) {
-      if (result.reasoning.trim()) {
-        sse.send({ type: "delta", text: result.reasoning });
-      } else {
-        throw new Error("模型没有返回内容，请重试。");
+      if (result.finishReason === "length") {
+        throw new Error("模型把输出预算用在了思考阶段，没有生成最终回答。请关闭深度思考或重试。");
       }
+      throw new Error("模型没有返回可显示的回答，请重试。");
     }
     if (result.finishReason === "length") {
       sse.send({ type: "delta", text: "\n\n…（回答达到长度上限，已截断）" });
@@ -1873,7 +1872,7 @@ async function runAgent(run, inputMessages, sse) {
         model: run.model || MODEL_AGENT,
         messages,
         stream: true,
-        max_tokens: 8192,
+        max_tokens: run.effort === "max" ? 32768 : 16384,
         temperature: 0.4,
         tools: AGENT_TOOLS,
         tool_choice: "auto",
