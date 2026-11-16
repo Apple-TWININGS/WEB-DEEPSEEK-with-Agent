@@ -12,6 +12,14 @@
 
 ![Agent 执行轨迹](screenshots/agent-light.png)
 
+![Agent 产出预览](screenshots/artifact-preview.jpg)
+
+![上下文洞察](screenshots/context-insights.jpg)
+
+![完全权限风险确认](screenshots/full-access.jpg)
+
+![壁纸与玻璃面板](screenshots/wallpaper-glass.jpg)
+
 ## 功能
 
 | 默认：对话 | 需要时：Agent |
