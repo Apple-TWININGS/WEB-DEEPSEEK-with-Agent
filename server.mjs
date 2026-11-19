@@ -17,6 +17,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { extractPptxText } from "./pptx.mjs";
 import qrcode from "./vendor/qrcode.cjs";
 
 let SOURCE_FILE = "";
@@ -35,7 +36,7 @@ const SECRETS_PATH = path.join(DATA_ROOT, "secrets.json");
 const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
 const IMPORT_TOKEN_PATH = path.join(DATA_ROOT, "deepseek-web-token.json");
 let WORKSPACE = loadWorkspaceSetting() || DEFAULT_WORKSPACE;
-const VERSION = "1.3.1";
+const VERSION = "1.3.2";
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const IS_LOOPBACK = HOST === "127.0.0.1" || HOST === "localhost" || HOST === "::1";
@@ -82,6 +83,7 @@ const MIME = {
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
+  ".webp": "image/webp",
   ".md": "text/markdown; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml; charset=utf-8",
@@ -342,6 +344,24 @@ function sameOrigin(req) {
 
 function isJsonRequest(req) {
   return String(req.headers["content-type"] || "").toLowerCase().includes("application/json");
+}
+
+function readRawBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(Object.assign(new Error("文件过大。"), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
 }
 
 function readJson(req, limit = MAX_BODY) {
@@ -1078,7 +1098,7 @@ async function readModelJson(res) {
    ============================================================ */
 function normalizeMessageContent(content) {
   if (typeof content === "string") {
-    const text = truncate(content, 48000);
+    const text = truncate(content, 150000);
     return text.trim() ? text : "";
   }
   if (!Array.isArray(content)) return "";
@@ -1180,13 +1200,19 @@ async function handleChat(req, res, body) {
     if (body.webSearch) {
       finalMessages = await maybeSearchForChat(messages, sse);
     }
+    const customSystem = typeof body.systemPrompt === "string"
+      ? truncate(body.systemPrompt.trim(), 4000)
+      : "";
+    if (customSystem) {
+      finalMessages = [{ role: "system", content: customSystem }, ...finalMessages];
+    }
     sse.send({ type: "meta", model, search: !!body.webSearch, deepThink });
 
     const payload = {
       model,
       messages: finalMessages,
       stream: true,
-      max_tokens: deepThink ? 32768 : 8192,
+      max_tokens: deepThink ? 32768 : 16384,
       ...reasoningPayload(deepThink ? "high" : "none"),
     };
     if (!deepThink) payload.temperature = 0.7;
@@ -2199,7 +2225,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && !sameOrigin(req)) {
     return sendJson(res, 403, { error: "跨站请求已被拒绝。" });
   }
-  if (req.method === "POST" && !isJsonRequest(req)) {
+  const isPptxUpload = req.method === "POST" && url.pathname === "/api/extract/pptx" &&
+    /^(application\/octet-stream|application\/zip|application\/vnd\.openxmlformats-officedocument\.presentationml\.presentation)/i.test(String(req.headers["content-type"] || ""));
+  if (req.method === "POST" && !isJsonRequest(req) && !isPptxUpload) {
     return sendJson(res, 415, { error: "POST 请求必须使用 application/json。" });
   }
 
@@ -2364,6 +2392,19 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, sessionId, messages });
       } catch (err) {
         return sendJson(res, 502, { error: "读取对话失败：" + err.message });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/extract/pptx") {
+      let filename = "";
+      try { filename = decodeURIComponent(String(req.headers["x-file-name"] || "")); } catch { filename = ""; }
+      if (!/\.pptx$/i.test(filename)) return sendJson(res, 400, { error: "只支持 .pptx 文件；旧版 .ppt 请先另存为 .pptx。" });
+      try {
+        const buffer = await readRawBody(req, 28 * 1024 * 1024);
+        const result = extractPptxText(buffer);
+        return sendJson(res, 200, { ok: true, filename, slides: result.slides, text: result.text });
+      } catch (err) {
+        return sendJson(res, err.status || 400, { error: "解析 PPTX 失败：" + err.message });
       }
     }
 

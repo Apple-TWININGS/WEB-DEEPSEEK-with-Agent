@@ -19,8 +19,14 @@
     rotate: false,
     interval: 60
   };
+  var OFFICIAL_SYSTEM_PROMPT =
+    "该助手为 DeepSeek，由深度求索公司创造。今天是 {{date}}。";
+  var DEFAULT_SYSTEM_PROMPT = OFFICIAL_SYSTEM_PROMPT +
+    "\n\n回答时先给结论，再补充必要的解释和可执行步骤；除非用户明确要求简短，否则给出完整、充实的回答。";
+
   var DEFAULT_SETTINGS = {
     theme: "system",
+    chatSystemPrompt: DEFAULT_SYSTEM_PROMPT,
     deepThink: false,
     webSearch: false,
     chatModel: "flash",
@@ -38,6 +44,20 @@
       wallpaper: Object.assign({}, DEFAULT_WALLPAPER),
       wallpapers: []
     });
+  }
+
+  function resolveChatSystemPrompt(value) {
+    var text = typeof value === "string" ? value : DEFAULT_SYSTEM_PROMPT;
+    if (!text.trim()) return "";
+    var date;
+    try {
+      date = new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric", month: "long", day: "numeric", weekday: "long"
+      }).format(new Date());
+    } catch (e) {
+      date = new Date().toLocaleDateString("zh-CN");
+    }
+    return text.replace(/\{\{date\}\}/g, date).trim();
   }
 
   var state = {
@@ -296,7 +316,7 @@
               kind: a.kind === "image" ? "image" : "file",
               name: String(a.name || "附件").slice(0, 160),
               size: Number(a.size) || 0,
-              content: String(a.content || "").slice(0, 140000),
+              content: String(a.content || "").slice(0, 500000),
               dataUrl: dataUrl.length < 4 * 1024 * 1024 ? dataUrl : "",
               mime: String(a.mime || ""),
               width: Number(a.width) || 0,
@@ -1942,7 +1962,6 @@
     var footnote = isAgent
       ? '<span>' + icon("eye") + "工具调用可见</span><span>" + icon("shield") + "写入前确认</span><span>" + icon("download") + "产出可下载</span>"
       : '<span>' + icon("shield") + "本地优先</span><span>" + icon("file") + "文件产出可下载</span><span>" + icon("check") + "写入前二次确认</span>";
-
     return '<div class="hero-visual"' + (isAgent ? ' data-mode="agent"' : "") + '>' +
       '<div class="hero-glow"></div><div class="hero-ring ring-one"></div><div class="hero-ring ring-two"></div>' +
       '<div class="hero-mark"><img class="hero-logo" src="deepseek-icon.png" alt=""></div>' +
@@ -2521,13 +2540,38 @@
         if (/^image\//.test(f.type || "")) {
           var image = await readImageFile(f);
           state.attachments.push(image);
+        } else if (/\.pptx$/i.test(f.name || "")) {
+          if (f.size > 28 * 1024 * 1024) {
+            toast("「" + f.name + "」超过 28 MB，未添加", "error");
+            continue;
+          }
+          var pres = await fetch("/api/extract/pptx", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "X-File-Name": encodeURIComponent(f.name)
+            },
+            body: f
+          });
+          if (pres.status === 401) { showLoginScreen(); continue; }
+          var pdata = await pres.json().catch(function () { return {}; });
+          if (!pres.ok) throw new Error(pdata.error || "PPT 解析失败");
+          state.attachments.push({
+            id: uid("att"), kind: "file", name: f.name, size: f.size,
+            content: String(pdata.text || "").slice(0, 500000)
+          });
+          toast("已提取 " + (pdata.slides || "?") + " 页 PPT 文字", "success");
+        } else if (/\.ppt$/i.test(f.name || "")) {
+          toast("旧版 .ppt 不支持，请先另存为 .pptx", "error", 5000);
+          continue;
         } else {
-          if (f.size > 140000) {
-            toast("「" + f.name + "」超过 140 KB，未添加", "error");
+          if (f.size > 2 * 1024 * 1024) {
+            toast("「" + f.name + "」超过 2 MB，未添加；大文件请用“文档入库”", "error", 5000);
             continue;
           }
           var text = await f.text();
-          state.attachments.push({ id: uid("att"), kind: "file", name: f.name, size: f.size, content: text.slice(0, 140000) });
+          state.attachments.push({ id: uid("att"), kind: "file", name: f.name, size: f.size, content: text.slice(0, 500000) });
+          if (text.length > 500000) toast("文件较大，已截取前 50 万字符；完整内容建议用“文档入库”", "error", 6000);
         }
       } catch (e) {
         toast("读取「" + f.name + "」失败：" + e.message, "error");
@@ -2554,8 +2598,8 @@
         if (a.kind === "image" && a.dataUrl) images.push(a);
         else content += "\n\n<file name=\"" + a.name + "\">\n" + a.content + "\n</file>";
       });
-      if (content.length > 32000) content = content.slice(0, 32000) + "\n…（已截断）";
-      if (total + content.length > 110000) content = content.slice(0, 16000);
+      if (content.length > 120000) content = content.slice(0, 120000) + "\n…（已截断）";
+      if (total + content.length > 500000) content = content.slice(0, 60000);
       total += content.length;
       if (images.length) {
         var blocks = [];
@@ -2770,7 +2814,8 @@
       messages: buildModelMessages(conv, msg.id),
       model: state.settings.chatModel === "pro" ? "pro" : "flash",
       deepThink: !!state.settings.deepThink,
-      webSearch: !!state.settings.webSearch
+      webSearch: !!state.settings.webSearch,
+      systemPrompt: resolveChatSystemPrompt(state.settings.chatSystemPrompt)
     };
     var res = await fetch("/api/chat", {
       method: "POST",
@@ -3814,7 +3859,8 @@
   function openContextInsights() {
     var conv = activeConversation();
     var isAgent = conv.mode === "agent";
-    var parts = { sys: isAgent ? 1800 : 0, tools: isAgent ? 2400 : 0, user: 0, assistant: 0, reason: 0, attach: 0, tool: 0 };
+    var chatSystemTokens = ctxTokens(resolveChatSystemPrompt(state.settings.chatSystemPrompt));
+    var parts = { sys: isAgent ? 1800 : chatSystemTokens, tools: isAgent ? 2400 : 0, user: 0, assistant: 0, reason: 0, attach: 0, tool: 0 };
     var toolCalls = 0;
     var artifacts = {};
     var sourceCount = 0;
@@ -3913,7 +3959,7 @@
       }).join("") + "</div>";
     }
 
-    html += '<p class="ctx-note">Token 为本地字符估算，和实际计费会有差异；普通聊天不添加 system prompt，Agent 的系统提示/工具 schema 为估算基线。' +
+    html += '<p class="ctx-note">Token 为本地字符估算，和实际计费会有差异；普通聊天的 system prompt 按设置计入，Agent 的系统提示/工具 schema 为估算基线。' +
       (sourceCount ? " 已计入 " + sourceCount + " 条联网来源。" : "") + "</p>";
     if (!conv.messages.length) {
       html = '<div class="ctx-empty">这个对话还没有消息。发一条消息后，这里会显示上下文组成和增长。</div>' + html;
@@ -3928,12 +3974,41 @@
   /* ============================================================
      Settings / dialogs
      ============================================================ */
+  function syncChatPromptUI() {
+    if (!els.chatSystemPromptInput) return;
+    var value = typeof state.settings.chatSystemPrompt === "string"
+      ? state.settings.chatSystemPrompt
+      : DEFAULT_SYSTEM_PROMPT;
+    els.chatSystemPromptInput.value = value;
+    if (els.chatPromptStatus) {
+      var on = !!value.trim();
+      els.chatPromptStatus.className = "status-pill " + (on ? "is-ok" : "");
+      els.chatPromptStatus.innerHTML = "<span></span>" + (on ? "已启用" : "未启用");
+    }
+  }
+
+  function saveChatPrompt() {
+    if (!els.chatSystemPromptInput) return;
+    state.settings.chatSystemPrompt = els.chatSystemPromptInput.value.trim();
+    syncChatPromptUI();
+    scheduleSave();
+    toast(state.settings.chatSystemPrompt ? "System Prompt 已保存" : "已关闭 System Prompt", "success");
+  }
+
+  function resetChatPrompt() {
+    state.settings.chatSystemPrompt = DEFAULT_SYSTEM_PROMPT;
+    syncChatPromptUI();
+    scheduleSave();
+    toast("已恢复默认 Prompt", "success");
+  }
+
   function openSettings(section) {
     closeContextMenu();
     refreshServerStatus({ quiet: true });
     loadLanInfo();
     loadWorkspaceInfo();
     loadImportStatus();
+    syncChatPromptUI();
     if (!els.settingsDialog.open) {
       els.settingsDialog.showModal();
       document.body.classList.add("dialog-open");
@@ -4499,6 +4574,8 @@
       els.apiKeyInput.type = visible ? "password" : "text";
       els.keyVisibilityBtn.innerHTML = icon(visible ? "eye" : "eye-off");
     });
+    els.saveChatPromptBtn.addEventListener("click", saveChatPrompt);
+    els.resetChatPromptBtn.addEventListener("click", resetChatPrompt);
     els.saveKeyBtn.addEventListener("click", saveKey);
     els.clearKeyBtn.addEventListener("click", clearKey);
     els.testKeyBtn.addEventListener("click", testConnection);
@@ -4699,6 +4776,10 @@
     els.toastStack = $("#toastStack");
     els.contextMenu = $("#contextMenu");
     els.settingsDialog = $("#settingsDialog");
+    els.chatSystemPromptInput = $("#chatSystemPromptInput");
+    els.chatPromptStatus = $("#chatPromptStatus");
+    els.saveChatPromptBtn = $("#saveChatPromptBtn");
+    els.resetChatPromptBtn = $("#resetChatPromptBtn");
     els.apiKeyInput = $("#apiKeyInput");
     els.keyVisibilityBtn = $("#keyVisibilityBtn");
     els.saveKeyBtn = $("#saveKeyBtn");

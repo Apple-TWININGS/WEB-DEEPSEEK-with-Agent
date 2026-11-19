@@ -72,6 +72,7 @@
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 12.5a7.5 7.5 0 0 1-7.5 7.5H5l-2 2V12.5A7.5 7.5 0 0 1 10.5 5h2A7.5 7.5 0 0 1 20 12.5Z"/><path d="M8 11.5h.01M12 11.5h.01M16 11.5h.01"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h7l5 5v13H6V3Z"/><path d="M13 3v5h5M9 13h6M9 17h6"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5V21H3V11.5Z"/><path d="M9 21v-7h6v7"/></symbol>
     <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l2 2M14 9l2 2"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v6c0 4.5 3 8 7.5 9.5C16.5 20 19.5 16.5 19.5 12V6L12 3Z"/><path d="m8.8 12 2.2 2.2 4.4-4.4"/></symbol>
     <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></symbol>
@@ -163,6 +164,7 @@
           <button class="workspace-chip" id="workspaceChip" type="button" hidden>
             <svg><use href="#i-folder"/></svg><span id="workspaceChipText">工作区</span>
           </button>
+          
           <button class="icon-btn" id="contextInsightsBtn" type="button" aria-label="上下文洞察" title="上下文洞察">
             <svg><use href="#i-brain"/></svg>
           </button>
@@ -234,6 +236,8 @@
               <svg class="agent-cta-arrow"><use href="#i-arrow-right"/></svg>
             </button>
 
+            
+
             <div class="hero-footnote">
               <span><svg><use href="#i-shield"/></svg>本地优先</span>
               <span><svg><use href="#i-file"/></svg>文件产出可下载</span>
@@ -261,7 +265,7 @@
               <button class="tool-btn attach-btn" id="attachBtn" type="button" aria-label="添加文本附件" title="添加文本附件">
                 <svg><use href="#i-paperclip"/></svg>
               </button>
-              <input id="fileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.log,.js,.ts,.tsx,.jsx,.py,.html,.css,.yaml,.yml,.xml,.sql,.sh,image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+              <input id="fileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.log,.js,.ts,.tsx,.jsx,.py,.html,.css,.yaml,.yml,.xml,.sql,.sh,.pptx,.ppt,image/png,image/jpeg,image/webp,image/gif" multiple hidden>
 
               <div class="mode-tools" id="chatTools">
                 <button class="tool-btn tool-toggle" id="thinkToggle" type="button" aria-pressed="false" title="深度思考">
@@ -486,6 +490,22 @@
         <p class="settings-hint"><a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">前往 DeepSeek 开放平台获取 Key<svg class="inline-icon"><use href="#i-external"/></svg></a> · 本地界面不会把 Key 发给除模型接口外的任何地址。</p>
       </section>
 
+      <section class="settings-section prompt-settings" id="chatPromptSection">
+        <div class="settings-section-head">
+          <div>
+            <h3>聊天 System Prompt</h3>
+            <p>基于 DeepSeek 官方网页端的极简身份句，额外加入“回答完整”的长度偏好。留空则完全不发送 system。</p>
+          </div>
+          <span class="status-pill" id="chatPromptStatus"><span></span>已启用</span>
+        </div>
+        <textarea class="prompt-textarea" id="chatSystemPromptInput" rows="5" spellcheck="false" placeholder="该助手为 DeepSeek，由深度求索公司创造。今天是 {{date}}。"></textarea>
+        <div class="settings-actions prompt-actions">
+          <button class="btn btn-primary" id="saveChatPromptBtn" type="button">保存 Prompt</button>
+          <button class="btn btn-ghost" id="resetChatPromptBtn" type="button">恢复默认</button>
+          <span class="settings-hint">支持 {{date}} 占位符，发送时自动替换为当天日期。</span>
+        </div>
+      </section>
+
       <section class="settings-section import-settings" id="deepseekImportSection">
         <div class="settings-section-head">
           <div>
@@ -523,7 +543,7 @@
       <section class="settings-section about-section">
         <div class="about-brand">
           <span class="brand-mark small"><img class="brand-logo" src="deepseek-icon.png" alt=""></span>
-          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.3.1</small></div>
+          <div><strong>DeepSeek Web</strong><small>本地优先的非官方网页端 · v1.3.2</small></div>
         </div>
         <p>界面与 Agent 工程参考 <em>Professional Agent</em> 的工具循环、diff 审批、备份恢复与密钥管理设计。聊天是默认入口，Agent 只在需要时出现。</p>
         <div class="about-badges"><span>Chat first</span><span>Local-first</span><span>Human in the loop</span></div>
