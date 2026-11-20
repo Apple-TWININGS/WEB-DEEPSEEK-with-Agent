@@ -1993,7 +1993,13 @@
   function scrollToBottom(behavior) {
     var el = els.chatScroll;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: behavior || "auto" });
+    // CSS sets scroll-behavior:smooth. Passing "auto" here would still animate
+    // and make streaming text look like it is shaking, so force instant except
+    // when the user explicitly asks for smooth.
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: behavior === "smooth" ? "smooth" : "instant"
+    });
   }
 
   function updateChatMeta() {
@@ -2190,7 +2196,13 @@
     var agent = msg.agent;
     var isStreaming = !!msg.streaming;
     var hasContent = !!msg.content;
-    var contentHtml = hasContent ? window.DSMarkdown.render(msg.content) : "";
+    // While streaming, keep one stable text node. Re-rendering Markdown on
+    // every token replaces the whole subtree and makes text visibly shake.
+    var contentHtml = hasContent
+      ? (isStreaming
+        ? '<div class="stream-plain">' + escapeHtml(msg.content) + "</div>"
+        : window.DSMarkdown.render(msg.content))
+      : "";
     var placeholder = "";
     if (!hasContent && isStreaming) {
       var agentBusy = agent ? (agent.steps && agent.steps.length ? "Agent 正在整理结果…" : "Agent 正在理解任务…") : "";
@@ -2296,6 +2308,18 @@
     pumpMarkdownJob(job);
   }
 
+  function appendStreamText(node, text, key) {
+    if (!node) return;
+    var current = String(text || "");
+    var rendered = Number(node.dataset[key] || 0);
+    if (current.length < rendered) {
+      node.textContent = current;
+    } else if (current.length > rendered) {
+      node.appendChild(document.createTextNode(current.slice(rendered)));
+    }
+    node.dataset[key] = String(current.length);
+  }
+
   function updateStreamingView(msg) {
     var node = document.querySelector('[data-msg-id="' + msg.id + '"]');
     if (!node) {
@@ -2309,21 +2333,40 @@
     }
     if (md) {
       md.classList.add("is-streaming");
-      queueMarkdownRender(msg, md);
+      if (msg.streaming) {
+        var plain = md.querySelector(".stream-plain");
+        if (!plain) {
+          md.innerHTML = '<div class="stream-plain"></div>';
+          plain = md.querySelector(".stream-plain");
+        }
+        if (plain.dataset.len == null) plain.dataset.len = String(plain.textContent.length);
+        appendStreamText(plain, msg.content, "len");
+      } else {
+        md.classList.remove("is-streaming");
+        queueMarkdownRender(msg, md);
+      }
     }
     var think = node.querySelector(".think-body");
-    if (msg.reasoning && think) think.innerHTML = escapeHtml(msg.reasoning).replace(/\n/g, "<br>");
+    if (msg.reasoning && think) {
+      var thinkText = think.querySelector(".think-stream");
+      if (!thinkText) {
+        think.innerHTML = '<span class="think-stream"></span>';
+        thinkText = think.querySelector(".think-stream");
+        thinkText.dataset.len = "0";
+      }
+      appendStreamText(thinkText, msg.reasoning, "len");
+    }
     var status = node.querySelector(".generation-status span:last-child");
     if (status && msg.content) status.textContent = "正在生成…";
     var stick = isNearBottom();
-    if (stick) requestAnimationFrame(function () { scrollToBottom("auto"); });
+    if (stick) requestAnimationFrame(function () { scrollToBottom("instant"); });
   }
 
   var pendingStreamMsg = null;
   var streamFlushTimer = null;
 
-  // Official-style burst rendering: collect tokens for ~0.45s, then paint
-  // one visibly larger chunk instead of repainting on every token.
+  // Smooth streaming: repaint at ~20 fps. Small enough to feel continuous,
+  // throttled enough to avoid per-token layout churn.
   function scheduleStreamUpdate(msg) {
     pendingStreamMsg = msg;
     if (streamFlushTimer) return;
@@ -2332,7 +2375,7 @@
       var target = pendingStreamMsg;
       pendingStreamMsg = null;
       if (target) updateStreamingView(target);
-    }, 450);
+    }, 50);
   }
 
   function flushStreamUpdate() {
