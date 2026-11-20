@@ -2050,10 +2050,15 @@
         escapeAttr(a.id) + '" aria-label="查看图片"><img src="' + escapeAttr(a.dataUrl) + '" alt="' + escapeAttr(a.name || "图片") + '"></button>';
     }).join("");
     return '<article class="message is-user" data-msg-id="' + escapeAttr(msg.id) + '">' +
+      '<div class="user-stack">' +
       '<div class="msg-body" data-user-text>' + (msg.content ? escapeHtml(msg.content) : "") +
       (imageHtml ? '<div class="user-images">' + imageHtml + "</div>" : "") +
       (atts ? '<div class="user-attachments">' + atts + "</div>" : "") +
       "</div>" +
+      '<div class="msg-actions user-actions">' +
+      '<button class="msg-action" type="button" data-action="edit-message" title="编辑并重新生成" aria-label="编辑消息">' + icon("pen") + "</button>" +
+      '<button class="msg-action" type="button" data-action="copy-message" title="复制" aria-label="复制消息">' + icon("copy") + "</button>" +
+      "</div></div>" +
       '<span class="msg-avatar user" aria-hidden="true">我</span>' +
       "</article>";
   }
@@ -3260,6 +3265,85 @@
   /* ============================================================
      Regenerate
      ============================================================ */
+  function editArticle(msgId) {
+    return $$(".message.is-user").find(function (node) { return node.dataset.msgId === msgId; }) || null;
+  }
+
+  function beginEditMessage(msgId) {
+    if (state.streaming) {
+      toast("请先停止当前生成", "error");
+      return;
+    }
+    var conv = activeConversation();
+    var msg = conv.messages.find(function (m) { return m.id === msgId; });
+    var article = editArticle(msgId);
+    if (!msg || !article || msg.role !== "user") return;
+    var stack = article.querySelector(".user-stack");
+    var body = article.querySelector(".msg-body");
+    if (!stack || !body) return;
+    var old = stack.querySelector(".message-editor");
+    if (old) old.remove();
+    var editor = document.createElement("div");
+    editor.className = "message-editor";
+    editor.innerHTML = '<textarea class="message-editor-input" aria-label="编辑消息"></textarea>' +
+      '<div class="message-editor-actions"><span>保存后会重新生成下面的回答</span>' +
+      '<button class="btn btn-ghost" type="button" data-action="cancel-edit">取消</button>' +
+      '<button class="btn btn-primary" type="button" data-action="save-edit">保存并重新生成</button></div>';
+    editor.querySelector("textarea").value = msg.content || "";
+    stack.appendChild(editor);
+    body.hidden = true;
+    article.classList.add("is-editing");
+    var input = editor.querySelector("textarea");
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  function cancelEditMessage(msgId) {
+    var article = editArticle(msgId);
+    if (!article) return;
+    var editor = article.querySelector(".message-editor");
+    if (editor) editor.remove();
+    var body = article.querySelector(".msg-body");
+    if (body) body.hidden = false;
+    article.classList.remove("is-editing");
+  }
+
+  async function saveEditedMessage(msgId) {
+    if (state.streaming) {
+      toast("请先停止当前生成", "error");
+      return;
+    }
+    var article = editArticle(msgId);
+    if (!article) return;
+    var input = article.querySelector(".message-editor-input");
+    if (!input) return;
+    var text = input.value.trim();
+    var conv = activeConversation();
+    var idx = conv.messages.findIndex(function (m) { return m.id === msgId; });
+    if (idx === -1 || conv.messages[idx].role !== "user") return;
+    var msg = conv.messages[idx];
+    if (!text && !(msg.attachments || []).length) {
+      toast("消息不能为空", "error");
+      return;
+    }
+    msg.content = text;
+    msg.updatedAt = now();
+    if (idx === 0) {
+      conv.title = truncate(text || ((msg.attachments || []).length ? "附件对话" : "新对话"), 28);
+    }
+    // 修订历史消息时，后面的回答已经不再对应当前问题，收起重来。
+    conv.messages = conv.messages.slice(0, idx + 1);
+    var mode = conv.mode === "agent" ? "agent" : "chat";
+    var demoFlag = !(state.server.online && state.server.key.configured);
+    var assistant = appendAssistantPlaceholder(conv, mode, demoFlag);
+    conv.updatedAt = now();
+    scheduleSave();
+    renderSidebar();
+    renderChat({ forceBottom: true });
+    toast("已修订，正在重新生成", "success");
+    await runTurn(conv, assistant, mode, !demoFlag);
+  }
+
   async function regenerateMessage(msgId) {
     if (state.streaming) {
       toast("请先停止当前生成", "error");
@@ -4525,6 +4609,9 @@
       var msgId = article && article.dataset.msgId;
       var action = actionBtn.dataset.action;
       if (action === "copy-message") copyMessage(msgId);
+      else if (action === "edit-message") beginEditMessage(msgId);
+      else if (action === "cancel-edit") cancelEditMessage(msgId);
+      else if (action === "save-edit") saveEditedMessage(msgId);
       else if (action === "regenerate") regenerateMessage(msgId);
       else if (action === "feedback-up") setFeedback(msgId, "up");
       else if (action === "feedback-down") setFeedback(msgId, "down");
