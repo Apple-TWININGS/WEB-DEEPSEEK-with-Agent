@@ -2319,13 +2319,30 @@
     if (stick) requestAnimationFrame(function () { scrollToBottom("auto"); });
   }
 
-  var pendingFrame = null;
+  var pendingStreamMsg = null;
+  var streamFlushTimer = null;
+
+  // Official-style burst rendering: collect tokens for ~0.9s, then paint
+  // one visibly larger chunk instead of repainting on every token.
   function scheduleStreamUpdate(msg) {
-    if (pendingFrame) return;
-    pendingFrame = requestAnimationFrame(function () {
-      pendingFrame = null;
-      updateStreamingView(msg);
-    });
+    pendingStreamMsg = msg;
+    if (streamFlushTimer) return;
+    streamFlushTimer = setTimeout(function () {
+      streamFlushTimer = null;
+      var target = pendingStreamMsg;
+      pendingStreamMsg = null;
+      if (target) updateStreamingView(target);
+    }, 900);
+  }
+
+  function flushStreamUpdate() {
+    if (streamFlushTimer) {
+      clearTimeout(streamFlushTimer);
+      streamFlushTimer = null;
+    }
+    var target = pendingStreamMsg;
+    pendingStreamMsg = null;
+    if (target) updateStreamingView(target);
   }
 
   function updateScrollButton() {
@@ -2769,6 +2786,7 @@
       updateSendState();
       scheduleSave();
       renderSidebar();
+      flushStreamUpdate();
       renderChat({ forceBottom: true });
       updateKeySettingsUI();
       if (msg.error) toast(msg.error, "error", 5000);
@@ -2857,6 +2875,7 @@
       } else if (ev.type === "done") {
         msg.streaming = false;
         if (msg.reasoning) msg.thinkMs = now() - msg.createdAt;
+        flushStreamUpdate();
       } else if (ev.type === "error") {
         throw new Error(ev.message || "模型返回错误");
       }
@@ -3068,6 +3087,7 @@
       agent.statusText = "任务完成";
       agent.open = false;
       msg.streaming = false;
+      flushStreamUpdate();
       clearPendingConfirmation();
       renderChat({ forceBottom: true });
     } else if (ev.type === "error") {
