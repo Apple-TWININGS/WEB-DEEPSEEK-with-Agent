@@ -2322,7 +2322,7 @@
   var pendingStreamMsg = null;
   var streamFlushTimer = null;
 
-  // Official-style burst rendering: collect tokens for ~0.9s, then paint
+  // Official-style burst rendering: collect tokens for ~0.45s, then paint
   // one visibly larger chunk instead of repainting on every token.
   function scheduleStreamUpdate(msg) {
     pendingStreamMsg = msg;
@@ -2332,7 +2332,7 @@
       var target = pendingStreamMsg;
       pendingStreamMsg = null;
       if (target) updateStreamingView(target);
-    }, 900);
+    }, 450);
   }
 
   function flushStreamUpdate() {
