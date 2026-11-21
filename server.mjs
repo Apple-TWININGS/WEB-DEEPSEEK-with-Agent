@@ -1151,6 +1151,16 @@ function lastUserContent(messages) {
   return "";
 }
 
+function looksLikeCreativeText(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (/(?:写|来|讲|编|续写|创作|生成)(?:一个|一段|一篇|个|段|篇)?(?:故事|小说|段子|剧本|童话|寓言|短篇|长篇)|(?:故事|小说|段子|剧本).{0,8}(?:正文|开头|结尾)/i.test(s)) return true;
+  if (/(?:角色扮演|扮演|人设|剧情|对白|旁白|出戏|入戏|第一幕|第二幕|场景|想继续就说|接着写|续写|接下去)/i.test(s)) return true;
+  if (/[（(][^）)]{2,80}[）)]/.test(s) && /[我你]/.test(s)) return true;
+  if ((s.match(/[“”"]/g) || []).length >= 4 && /[我你]/.test(s)) return true;
+  return false;
+}
+
 async function maybeSearchForChat(messages, sse) {
   const query = lastUserContent(messages);
   if (!query) return messages;
@@ -1196,7 +1206,7 @@ async function handleChat(req, res, body) {
   });
 
   try {
-    const creativeMode = body.creativeMode === true;
+    const creativeMode = body.creativeMode === true || looksLikeCreativeText(lastUserContent(messages));
     let finalMessages = messages;
     if (body.webSearch && !creativeMode) {
       finalMessages = await maybeSearchForChat(messages, sse);

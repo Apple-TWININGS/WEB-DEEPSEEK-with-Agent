@@ -2478,8 +2478,17 @@
     }
     els.composerInput.placeholder = mode === "agent" ? "描述一个任务，Agent 会规划并执行…" : "给 DeepSeek 发送消息";
     els.thinkToggle.setAttribute("aria-pressed", state.settings.deepThink ? "true" : "false");
-    els.searchToggle.setAttribute("aria-pressed", state.settings.webSearch ? "true" : "false");
-    if (els.creativeToggle) els.creativeToggle.setAttribute("aria-pressed", state.settings.creativeMode ? "true" : "false");
+    if (els.modeToggle) {
+      var modeName = state.settings.creativeMode ? "creative" : (state.settings.webSearch ? "search" : "off");
+      els.modeToggle.setAttribute("aria-pressed", modeName === "off" ? "false" : "true");
+      els.modeToggle.title = modeName === "creative" ? "创作模式：不联网，只输出故事正文"
+        : (modeName === "search" ? "联网搜索：允许检索并显示来源" : "普通对话：不联网");
+      if (els.modeLabel) els.modeLabel.textContent = modeName === "creative" ? "创作模式" : "联网搜索";
+      if (els.modeIcon) els.modeIcon.setAttribute("href", modeName === "creative" ? "#i-pen" : "#i-globe");
+      $$("#modeMenu [data-mode]").forEach(function (b) {
+        b.classList.toggle("is-active", b.dataset.mode === modeName);
+      });
+    }
     els.modeBadge.hidden = mode !== "agent";
     if (!state.streaming) updateComposerHint();
   }
@@ -4631,22 +4640,30 @@
       scheduleSave();
       toast(state.settings.deepThink ? "已开启深度思考" : "已关闭深度思考");
     });
-    els.searchToggle.addEventListener("click", function () {
+    function closeModeMenu() {
+      if (!els.modeMenu) return;
+      els.modeMenu.hidden = true;
+      els.modeToggle.setAttribute("aria-expanded", "false");
+    }
+    els.modeToggle.addEventListener("click", function (e) {
+      e.stopPropagation();
       if (state.settings.mode === "agent") return;
-      if (state.streaming) return toast("请先停止当前生成", "error");
-      state.settings.webSearch = !state.settings.webSearch;
-      updateModeUI();
-      scheduleSave();
-      toast(state.settings.webSearch ? "已开启联网搜索" : "已关闭联网搜索");
+      var open = els.modeMenu.hidden;
+      els.modeMenu.hidden = !open;
+      els.modeToggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
-    els.creativeToggle.addEventListener("click", function () {
-      if (state.settings.mode === "agent") return;
+    els.modeMenu.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-mode]");
+      if (!btn) return;
       if (state.streaming) return toast("请先停止当前生成", "error");
-      state.settings.creativeMode = !state.settings.creativeMode;
-      if (state.settings.creativeMode) state.settings.webSearch = false;
+      var next = btn.dataset.mode;
+      state.settings.webSearch = next === "search";
+      state.settings.creativeMode = next === "creative";
+      closeModeMenu();
       updateModeUI();
       scheduleSave();
-      toast(state.settings.creativeMode ? "创作模式：只输出故事正文" : "已退出创作模式");
+      toast(next === "creative" ? "创作模式：不联网，只输出正文"
+        : (next === "search" ? "已开启联网搜索" : "已切回普通对话"));
     });
     els.attachBtn.addEventListener("click", function () { els.fileInput.click(); });
     els.fileInput.addEventListener("change", function () { addFiles(els.fileInput.files); });
@@ -4783,6 +4800,7 @@
     });
     document.addEventListener("click", function (e) {
       if (!e.target.closest("#contextMenu") && !e.target.closest("[data-conv-menu]")) closeContextMenu();
+      if (!e.target.closest("#modePicker")) closeModeMenu();
     });
     window.addEventListener("scroll", closeContextMenu, true);
 
@@ -4797,6 +4815,7 @@
         els.composerInput.focus();
       } else if (e.key === "Escape") {
         closeContextMenu();
+        closeModeMenu();
         closeSidebar();
       }
     });
@@ -4942,8 +4961,10 @@
     els.chatTools = $("#chatTools");
     els.agentTools = $("#agentTools");
     els.thinkToggle = $("#thinkToggle");
-    els.searchToggle = $("#searchToggle");
-    els.creativeToggle = $("#creativeToggle");
+    els.modeToggle = $("#modeToggle");
+    els.modeMenu = $("#modeMenu");
+    els.modeLabel = $("#modeLabel");
+    els.modeIcon = $("#modeIcon");
     els.chatModelSelect = $("#chatModelSelect");
     els.agentModelSelect = $("#agentModelSelect");
     els.agentEffortSelect = $("#agentEffortSelect");

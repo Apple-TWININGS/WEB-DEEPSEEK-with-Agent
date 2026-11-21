@@ -271,12 +271,17 @@
                 <button class="tool-btn tool-toggle" id="thinkToggle" type="button" aria-pressed="false" title="深度思考">
                   <svg><use href="#i-brain"/></svg><span>深度思考</span>
                 </button>
-                <button class="tool-btn tool-toggle" id="searchToggle" type="button" aria-pressed="false" title="联网搜索">
-                  <svg><use href="#i-globe"/></svg><span>联网搜索</span>
-                </button>
-                <button class="tool-btn tool-toggle" id="creativeToggle" type="button" aria-pressed="false" title="创作模式：只输出故事正文，不带来源和可执行建议">
-                  <svg><use href="#i-pen"/></svg><span>创作模式</span>
-                </button>
+                <div class="mode-picker" id="modePicker">
+                  <button class="tool-btn tool-toggle" id="modeToggle" type="button" aria-haspopup="menu" aria-expanded="false" title="选择搜索或创作模式">
+                    <svg><use id="modeIcon" href="#i-globe"/></svg><span id="modeLabel">联网搜索</span>
+                    <svg class="mode-caret"><use href="#i-chevron-down"/></svg>
+                  </button>
+                  <div class="mode-menu" id="modeMenu" role="menu" hidden>
+                    <button type="button" role="menuitem" data-mode="off">普通对话<small>不联网，不启用创作模式</small></button>
+                    <button type="button" role="menuitem" data-mode="search">联网搜索<small>允许检索并显示参考来源</small></button>
+                    <button type="button" role="menuitem" data-mode="creative">创作模式<small>不联网，只输出故事正文</small></button>
+                  </div>
+                </div>
               </div>
               <div class="agent-tools" id="agentTools" hidden>
                 <span class="agent-tool"><svg><use href="#i-globe"/></svg>联网搜索</span>

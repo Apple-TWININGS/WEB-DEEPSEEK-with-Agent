@@ -1840,6 +1840,39 @@ body.has-wallpaper .dialog::backdrop { background: rgba(9, 13, 22, .32); }
   background: var(--accent-soft);
 }
 .tool-toggle[aria-pressed="true"] svg { color: var(--accent); }
+.mode-picker { position: relative; display: inline-flex; }
+.mode-picker .mode-caret { width: 10px !important; height: 10px !important; opacity: .55; }
+.mode-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 9px);
+  z-index: 40;
+  width: 214px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: 0 18px 50px rgba(20, 16, 12, .18);
+}
+.mode-menu[hidden] { display: none; }
+.mode-menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--text-2);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.mode-menu button:hover, .mode-menu button.is-active { color: var(--text); background: var(--surface-2); }
+.mode-menu small { color: var(--muted); font-size: 8.5px; }
 
 .mode-switch {
   display: inline-flex;
