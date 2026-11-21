@@ -2637,8 +2637,31 @@
             content: String(pdata.text || "").slice(0, 500000)
           });
           toast("已提取 " + (pdata.slides || "?") + " 页 PPT 文字", "success");
-        } else if (/\.ppt$/i.test(f.name || "")) {
-          toast("旧版 .ppt 不支持，请先另存为 .pptx", "error", 5000);
+        } else if (/\.(docx|xlsx)$/i.test(f.name || "")) {
+          if (f.size > 28 * 1024 * 1024) {
+            toast("「" + f.name + "」超过 28 MB，未添加", "error");
+            continue;
+          }
+          var ores = await fetch("/api/extract/office", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "X-File-Name": encodeURIComponent(f.name)
+            },
+            body: f
+          });
+          if (ores.status === 401) { showLoginScreen(); continue; }
+          var odata = await ores.json().catch(function () { return {}; });
+          if (!ores.ok) throw new Error(odata.error || "Office 解析失败");
+          state.attachments.push({
+            id: uid("att"), kind: "file", name: f.name, size: f.size,
+            content: String(odata.text || "").slice(0, 500000)
+          });
+          toast(odata.type === "xlsx"
+            ? ("已提取 " + (odata.sheets || "?") + " 个工作表")
+            : ("已提取 " + (odata.paragraphs || "?") + " 段 DOC 文字"), "success");
+        } else if (/\.(ppt|doc|xls)$/i.test(f.name || "")) {
+          toast("旧版 ." + f.name.split(".").pop() + " 不支持，请先另存为 .pptx/.docx/.xlsx", "error", 5000);
           continue;
         } else {
           if (f.size > 2 * 1024 * 1024) {

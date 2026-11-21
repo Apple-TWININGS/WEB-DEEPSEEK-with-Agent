@@ -17,7 +17,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { extractPptxText } from "./pptx.mjs";
+import { extractPptxText, extractDocxText, extractXlsxText } from "./pptx.mjs";
 import qrcode from "./vendor/qrcode.cjs";
 
 let SOURCE_FILE = "";
@@ -2240,9 +2240,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && !sameOrigin(req)) {
     return sendJson(res, 403, { error: "跨站请求已被拒绝。" });
   }
-  const isPptxUpload = req.method === "POST" && url.pathname === "/api/extract/pptx" &&
-    /^(application\/octet-stream|application\/zip|application\/vnd\.openxmlformats-officedocument\.presentationml\.presentation)/i.test(String(req.headers["content-type"] || ""));
-  if (req.method === "POST" && !isJsonRequest(req) && !isPptxUpload) {
+  const isOfficeUpload = req.method === "POST" && /^\/api\/extract\/(?:pptx|office)$/.test(url.pathname) &&
+    /^(application\/octet-stream|application\/zip|application\/vnd\.openxmlformats-officedocument\.(?:presentationml\.presentation|wordprocessingml\.document|spreadsheetml\.sheet))/i.test(String(req.headers["content-type"] || ""));
+  if (req.method === "POST" && !isJsonRequest(req) && !isOfficeUpload) {
     return sendJson(res, 415, { error: "POST 请求必须使用 application/json。" });
   }
 
@@ -2420,6 +2420,28 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, filename, slides: result.slides, text: result.text });
       } catch (err) {
         return sendJson(res, err.status || 400, { error: "解析 PPTX 失败：" + err.message });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/extract/office") {
+      let filename = "";
+      try { filename = decodeURIComponent(String(req.headers["x-file-name"] || "")); } catch { filename = ""; }
+      const ext = (filename.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || "";
+      if (!["pptx", "docx", "xlsx"].includes(ext)) {
+        return sendJson(res, 400, { error: "只支持 .pptx / .docx / .xlsx；旧版 .ppt/.doc/.xls 请先另存为新格式。" });
+      }
+      try {
+        const buffer = await readRawBody(req, 28 * 1024 * 1024);
+        let result;
+        if (ext === "pptx") result = extractPptxText(buffer);
+        else if (ext === "docx") result = extractDocxText(buffer);
+        else result = extractXlsxText(buffer);
+        return sendJson(res, 200, {
+          ok: true, filename, type: ext, text: result.text,
+          slides: result.slides, paragraphs: result.paragraphs, sheets: result.sheets, rows: result.rows
+        });
+      } catch (err) {
+        return sendJson(res, err.status || 400, { error: "解析 " + ext.toUpperCase() + " 失败：" + err.message });
       }
     }
 
