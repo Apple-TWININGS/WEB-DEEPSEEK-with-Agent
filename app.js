@@ -29,6 +29,7 @@
     chatSystemPrompt: DEFAULT_SYSTEM_PROMPT,
     deepThink: false,
     webSearch: false,
+    creativeMode: false,
     chatModel: "flash",
     agentModel: "pro",
     agentEffort: "high",
@@ -2478,6 +2479,7 @@
     els.composerInput.placeholder = mode === "agent" ? "描述一个任务，Agent 会规划并执行…" : "给 DeepSeek 发送消息";
     els.thinkToggle.setAttribute("aria-pressed", state.settings.deepThink ? "true" : "false");
     els.searchToggle.setAttribute("aria-pressed", state.settings.webSearch ? "true" : "false");
+    if (els.creativeToggle) els.creativeToggle.setAttribute("aria-pressed", state.settings.creativeMode ? "true" : "false");
     els.modeBadge.hidden = mode !== "agent";
     if (!state.streaming) updateComposerHint();
   }
@@ -2875,12 +2877,25 @@
   /* ============================================================
      Chat: real API
      ============================================================ */
+  function looksLikeStoryRequest(text) {
+    var s = String(text || "").trim();
+    if (!s) return false;
+    return /(?:写|来|讲|编|续写|创作|生成)(?:一个|一段|一篇|个|段|篇)?(?:故事|小说|段子|剧本|童话|寓言|短篇|长篇)|(?:故事|小说|段子|剧本).{0,6}(?:正文|开头|结尾)/i.test(s) ||
+      /write\s+(?:a|an)\s+(?:short\s+)?story/i.test(s);
+  }
+
   async function runRealChat(conv, msg, signal) {
+    var lastUser = null;
+    for (var ui = conv.messages.length - 1; ui >= 0; ui--) {
+      if (conv.messages[ui].role === "user") { lastUser = conv.messages[ui]; break; }
+    }
+    var creativeMode = !!state.settings.creativeMode || looksLikeStoryRequest(lastUser && lastUser.content);
     var body = {
       messages: buildModelMessages(conv, msg.id),
       model: state.settings.chatModel === "pro" ? "pro" : "flash",
       deepThink: !!state.settings.deepThink,
-      webSearch: !!state.settings.webSearch,
+      webSearch: !!state.settings.webSearch && !creativeMode,
+      creativeMode: creativeMode,
       systemPrompt: resolveChatSystemPrompt(state.settings.chatSystemPrompt)
     };
     var res = await fetch("/api/chat", {
@@ -2947,8 +2962,9 @@
       msg.thinkMs = now() - msg.createdAt;
       await sleep(220, signal);
     }
-    var answer = demoAnswer(prompt, { search: state.settings.webSearch });
-    if (state.settings.webSearch) {
+    var creativeMode = !!state.settings.creativeMode || looksLikeStoryRequest(prompt);
+    var answer = demoAnswer(prompt, { search: state.settings.webSearch && !creativeMode });
+    if (state.settings.webSearch && !creativeMode) {
       answer = "> 当前为演示模式，没有发起真实联网搜索。接入 API 后，联网结果会由服务端注入。\n\n" + answer;
     }
     await typeText(answer, function (chunk) {
@@ -4623,6 +4639,15 @@
       scheduleSave();
       toast(state.settings.webSearch ? "已开启联网搜索" : "已关闭联网搜索");
     });
+    els.creativeToggle.addEventListener("click", function () {
+      if (state.settings.mode === "agent") return;
+      if (state.streaming) return toast("请先停止当前生成", "error");
+      state.settings.creativeMode = !state.settings.creativeMode;
+      if (state.settings.creativeMode) state.settings.webSearch = false;
+      updateModeUI();
+      scheduleSave();
+      toast(state.settings.creativeMode ? "创作模式：只输出故事正文" : "已退出创作模式");
+    });
     els.attachBtn.addEventListener("click", function () { els.fileInput.click(); });
     els.fileInput.addEventListener("change", function () { addFiles(els.fileInput.files); });
     document.addEventListener("paste", function (e) {
@@ -4918,6 +4943,7 @@
     els.agentTools = $("#agentTools");
     els.thinkToggle = $("#thinkToggle");
     els.searchToggle = $("#searchToggle");
+    els.creativeToggle = $("#creativeToggle");
     els.chatModelSelect = $("#chatModelSelect");
     els.agentModelSelect = $("#agentModelSelect");
     els.agentEffortSelect = $("#agentEffortSelect");

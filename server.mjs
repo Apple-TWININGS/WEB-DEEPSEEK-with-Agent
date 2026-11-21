@@ -1196,17 +1196,22 @@ async function handleChat(req, res, body) {
   });
 
   try {
+    const creativeMode = body.creativeMode === true;
     let finalMessages = messages;
-    if (body.webSearch) {
+    if (body.webSearch && !creativeMode) {
       finalMessages = await maybeSearchForChat(messages, sse);
     }
     const customSystem = typeof body.systemPrompt === "string"
       ? truncate(body.systemPrompt.trim(), 4000)
       : "";
-    if (customSystem) {
-      finalMessages = [{ role: "system", content: customSystem }, ...finalMessages];
+    const creativeSystem = creativeMode
+      ? "【创作模式】用户要求创作故事/小说/段子/剧本等作品。只输出作品正文；不要输出参考来源、引用编号、补充说明、可执行建议、写作分析或“希望对你有帮助”之类的收尾。不要在正文前后解释你的写法。"
+      : "";
+    const systemText = [customSystem, creativeSystem].filter(Boolean).join("\n\n");
+    if (systemText) {
+      finalMessages = [{ role: "system", content: systemText }, ...finalMessages];
     }
-    sse.send({ type: "meta", model, search: !!body.webSearch, deepThink });
+    sse.send({ type: "meta", model, search: !!body.webSearch && !creativeMode, deepThink });
 
     const payload = {
       model,
