@@ -107,7 +107,7 @@
     previewArtifact: null,
     previewObjectUrl: null,
     viewingImage: null,
-    speech: { msgId: "", utterance: null, voices: [] },
+    speech: { msgId: "", utterance: null, voices: [], audio: null, audioUrl: "" },
     pendingImport: null,
     importSessions: [],
     fullAccess: { active: false, expiresAt: 0 },
@@ -3913,12 +3913,26 @@
     var voices = speechVoices();
     state.speech.voices = voices;
     var selected = state.settings.speechVoice || "";
-    els.speechVoiceSelect.innerHTML = '<option value="">系统默认声音</option>' +
-      voices.map(function (v) {
+    var providerOptions = [
+      { id: "", label: "系统默认声音" },
+      { id: "deepseek:tide", label: "暗潮 · DeepSeek 官方（男声）" },
+      { id: "deepseek:stella", label: "海星 · DeepSeek 官方（女声）" },
+      { id: "edge:zh-CN-YunxiNeural", label: "云希 · Edge（男声，联网）" },
+      { id: "edge:zh-CN-YunyangNeural", label: "白浪（近似）· Edge（男声，联网）" }
+    ];
+    var html = '<optgroup label="官方 / 云端音色">' + providerOptions.map(function (v) {
+      return '<option value="' + escapeAttr(v.id) + '">' + escapeHtml(v.label) + "</option>";
+    }).join("") + "</optgroup>";
+    if (voices.length) {
+      html += '<optgroup label="本机系统音色">' + voices.map(function (v) {
         var name = v.name + (v.lang ? " · " + v.lang : "");
         return '<option value="' + escapeAttr(v.voiceURI || v.name) + '">' + escapeHtml(name) + "</option>";
-      }).join("");
-    if (selected && voices.some(function (v) { return (v.voiceURI || v.name) === selected; })) {
+      }).join("") + "</optgroup>";
+    }
+    els.speechVoiceSelect.innerHTML = html;
+    var isSystem = selected && voices.some(function (v) { return (v.voiceURI || v.name) === selected; });
+    var isProvider = providerOptions.some(function (v) { return v.id === selected; });
+    if (selected && (isSystem || isProvider)) {
       els.speechVoiceSelect.value = selected;
     } else {
       state.settings.speechVoice = "";
@@ -3935,9 +3949,7 @@
     if (els.speechRate) els.speechRate.value = String(state.settings.speechRate || 1);
     if (els.speechRateValue) els.speechRateValue.textContent = Number(state.settings.speechRate || 1).toFixed(2).replace(/0$/, "") + "×";
     if (els.speechHint) {
-      els.speechHint.textContent = window.speechSynthesis
-        ? "回答下方有喇叭按钮；自动朗读只朗读新生成的回答。"
-        : "当前浏览器不支持系统语音合成，请换 Chrome 或 Edge。";
+      els.speechHint.textContent = "暗潮/海星走 DeepSeek 官方 TTS（按字符计费，需配置 Key）；云希/白浪近似走 Edge TTS（需联网和 edge-tts）。回答下方有喇叭按钮。";
     }
     if (els.speechStatus) {
       els.speechStatus.className = "status-pill " + (window.speechSynthesis ? "is-ok" : "");
@@ -3955,29 +3967,92 @@
   }
 
   function stopSpeech(silent) {
-    if (!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    if (state.speech.audio) {
+      try { state.speech.audio.pause(); } catch {}
+      state.speech.audio = null;
+    }
+    if (state.speech.audioUrl) {
+      try { URL.revokeObjectURL(state.speech.audioUrl); } catch {}
+      state.speech.audioUrl = "";
+    }
+    state.speech.token = "";
     state.speech.msgId = "";
     state.speech.utterance = null;
     markSpeechButton("", false);
     if (!silent) toast("已停止朗读");
   }
 
-  function speakText(text, msgId) {
-    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
-      toast("当前浏览器不支持语音合成", "error");
-      return;
+  async function speakRemote(text, msgId, voiceId) {
+    stopSpeech(true);
+    state.speech.msgId = msgId || "";
+    var token = uid("tts");
+    state.speech.token = token;
+    markSpeechButton(msgId || "", true);
+    try {
+      var res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text, voice: voiceId })
+      });
+      if (state.speech.token !== token) return;
+      if (res.status === 401) { showLoginScreen(); return; }
+      if (!res.ok) {
+        var data = await res.json().catch(function () { return {}; });
+        throw new Error(data.error || "语音合成失败");
+      }
+      var blob = await res.blob();
+      if (state.speech.token !== token) return;
+      var url = URL.createObjectURL(blob);
+      var audio = new Audio(url);
+      state.speech.audio = audio;
+      state.speech.audioUrl = url;
+      audio.onended = function () {
+        if (state.speech.audio === audio) {
+          state.speech.msgId = "";
+          state.speech.audio = null;
+          state.speech.audioUrl = "";
+          try { URL.revokeObjectURL(url); } catch {}
+          markSpeechButton("", false);
+        }
+      };
+      audio.onerror = function () {
+        if (state.speech.audio === audio) {
+          state.speech.audio = null;
+          state.speech.msgId = "";
+          markSpeechButton("", false);
+          toast("音频播放失败", "error");
+        }
+      };
+      await audio.play();
+    } catch (e) {
+      if (state.speech.token !== token) return;
+      stopSpeech(true);
+      var message = friendlyError(e);
+      if (/play\(\)|not allowed|user gesture/i.test(message)) message = "浏览器拦截了自动播放，请点一下喇叭按钮。";
+      toast(message, "error", 5000);
     }
+  }
+
+  function speakText(text, msgId) {
     var clean = speechText(text);
     if (!clean) {
       toast("这条回答没有可朗读的文字", "error");
+      return;
+    }
+    var voiceId = state.settings.speechVoice || "";
+    if (/^(deepseek|edge):/.test(voiceId)) {
+      speakRemote(clean, msgId, voiceId);
+      return;
+    }
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+      toast("当前浏览器不支持系统语音合成", "error");
       return;
     }
     stopSpeech(true);
     var utterance = new SpeechSynthesisUtterance(clean);
     utterance.lang = "zh-CN";
     utterance.rate = Number(state.settings.speechRate || 1);
-    var voiceId = state.settings.speechVoice || "";
     var voice = (state.speech.voices || []).find(function (v) { return (v.voiceURI || v.name) === voiceId; }) ||
       (state.speech.voices || [])[0];
     if (voice) utterance.voice = voice;
@@ -4004,7 +4079,7 @@
   }
 
   function speakMessage(msgId) {
-    if (state.speech.msgId === msgId && state.speech.utterance) {
+    if (state.speech.msgId === msgId && (state.speech.utterance || state.speech.audio)) {
       stopSpeech();
       return;
     }
@@ -4945,10 +5020,8 @@
     els.speechVoiceSelect.addEventListener("change", function () {
       state.settings.speechVoice = els.speechVoiceSelect.value;
       scheduleSave();
-      if (window.speechSynthesis) {
-        var sample = "你好，我是陈深。";
-        speakText(sample, "");
-      }
+      updateSpeechUI();
+      toast("朗读音色已切换");
     });
     els.speechTestBtn.addEventListener("click", function () {
       speakText("你好，我是陈深。这是一段语音朗读测试。", "");

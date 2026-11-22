@@ -241,6 +241,68 @@ function recordLoginFailure(ip) {
   else item.count++;
 }
 
+async function synthesizeDeepSeekTts(text, voiceId) {
+  const key = resolveKey();
+  if (!key) throw Object.assign(new Error("还没有配置 DeepSeek API Key。"), { status: 401 });
+  const res = await fetch("https://api.deepseek.com/v1/tools/tts", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + key,
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    body: JSON.stringify({ text, voice_id: voiceId, format: "wav" }),
+    signal: AbortSignal.timeout(90000)
+  });
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json())?.error?.message || ""; } catch {}
+    throw Object.assign(new Error(detail || ("DeepSeek TTS HTTP " + res.status)), { status: 502 });
+  }
+  return { buffer: Buffer.from(await res.arrayBuffer()), mime: "audio/wav" };
+}
+
+function synthesizeEdgeTts(text, voiceId) {
+  return new Promise((resolve, reject) => {
+    // Windows can deny the Python child write access to Temp/LocalAppData
+    // under its application-control policy. The app directory is user-writable
+    // and has worked reliably for edge-tts, so use a single hidden temp file
+    // there (no subdirectory creation).
+    const out = path.join(ROOT, ".tts-" + crypto.randomUUID() + ".mp3");
+    const py = process.env.DEEPSEEK_TTS_PYTHON || "python";
+    const child = spawn(py, [
+      "-m", "edge_tts", "--voice", voiceId, "--text", text, "--write-media", out
+    ], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+    let err = "";
+    const cleanup = () => fsp.rm(out, { force: true }).catch(() => {});
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      cleanup();
+      reject(Object.assign(new Error("Edge TTS 合成超时。"), { status: 504 }));
+    }, 90000);
+    child.stderr.on("data", (c) => { err += c.toString("utf8"); });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      cleanup();
+      reject(Object.assign(new Error("无法启动 Python / edge-tts：" + e.message), { status: 501 }));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        cleanup();
+        reject(Object.assign(new Error(truncate(err.trim() || "Edge TTS 合成失败。", 300)), { status: 502 }));
+        return;
+      }
+      fsp.readFile(out).then((buffer) => {
+        cleanup();
+        resolve({ buffer, mime: "audio/mpeg" });
+      }).catch((e) => {
+        cleanup();
+        reject(e);
+      });
+    });
+  });
+}
+
 function lanAddresses() {
   const byAddress = new Map();
   const interfaces = os.networkInterfaces();
@@ -2447,6 +2509,31 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (err) {
         return sendJson(res, err.status || 400, { error: "解析 " + ext.toUpperCase() + " 失败：" + err.message });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/tts") {
+      try {
+        const body = await readJson(req, 200 * 1024);
+        const text = String(body.text || "").trim().slice(0, 9000);
+        const voice = String(body.voice || "").trim();
+        if (!text) return sendJson(res, 400, { error: "没有可朗读的文字。" });
+        let result;
+        if (voice === "deepseek:tide" || voice === "deepseek:stella") {
+          result = await synthesizeDeepSeekTts(text, voice.slice("deepseek:".length));
+        } else if (voice === "edge:zh-CN-YunxiNeural" || voice === "edge:zh-CN-YunyangNeural") {
+          result = await synthesizeEdgeTts(text, voice.slice("edge:".length));
+        } else {
+          return sendJson(res, 400, { error: "不支持的音色。" });
+        }
+        res.writeHead(200, {
+          "Content-Type": result.mime,
+          "Content-Length": result.buffer.length,
+          "Cache-Control": "no-store"
+        });
+        return res.end(result.buffer);
+      } catch (err) {
+        return sendJson(res, err.status || 500, { error: err.message || "语音合成失败。" });
       }
     }
 

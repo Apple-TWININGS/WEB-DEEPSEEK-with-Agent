@@ -5,6 +5,7 @@ title DeepSeek Web - LAN
 
 set "HOST=0.0.0.0"
 if not defined PORT set "PORT=4173"
+if not defined ACCESS_PASSWORD set "ACCESS_PASSWORD=yagamilight0620"
 set "DEEPSEEK_WEB_OPEN_BROWSER=1"
 
 echo.
