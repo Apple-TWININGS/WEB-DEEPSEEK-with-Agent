@@ -57,6 +57,7 @@
     <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
     <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 10v4h3l4 3V7L7 10H4Z"/><path d="M14 9a4 4 0 0 1 0 6M16.5 6.5a8 8 0 0 1 0 11"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 6.8"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M19.2 15a8 8 0 1 1-.7-8.5L20 11"/></symbol>
     <symbol id="i-thumb-up" viewBox="0 0 24 24"><path d="M7 10v10H4V10h3ZM7 19c2 1.4 4 2 6.2 2h2.3a3 3 0 0 0 3-2.4l1.2-6A2.4 2.4 0 0 0 17.3 9H14l.5-3.2A2.5 2.5 0 0 0 12 3.2L7 10"/></symbol>
@@ -496,6 +497,30 @@
           </div>
         </div>
         <p class="settings-hint"><a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">前往 DeepSeek 开放平台获取 Key<svg class="inline-icon"><use href="#i-external"/></svg></a> · 本地界面不会把 Key 发给除模型接口外的任何地址。</p>
+      </section>
+
+      <section class="settings-section speech-settings" id="speechSection">
+        <div class="settings-section-head">
+          <div>
+            <h3>语音朗读</h3>
+            <p>使用系统自带语音朗读回答，不上传文字，也不消耗 API 额度。</p>
+          </div>
+          <span class="status-pill" id="speechStatus"><span></span>就绪</span>
+        </div>
+        <div class="speech-controls">
+          <button class="switch" id="autoSpeakSwitch" type="button" aria-pressed="false">
+            <span>自动朗读</span><span class="switch-track"><i></i></span>
+          </button>
+          <select id="speechVoiceSelect" aria-label="选择朗读声音">
+            <option value="">系统默认声音</option>
+          </select>
+          <label class="speech-rate">语速
+            <input id="speechRate" type="range" min="0.6" max="1.8" step="0.05" value="1">
+            <b id="speechRateValue">1.0×</b>
+          </label>
+          <button class="btn btn-ghost" id="speechTestBtn" type="button"><svg><use href="#i-volume"/></svg>试听</button>
+        </div>
+        <p class="settings-hint" id="speechHint">回答下方有喇叭按钮；自动朗读只朗读新生成的回答。</p>
       </section>
 
       <section class="settings-section prompt-settings" id="chatPromptSection">

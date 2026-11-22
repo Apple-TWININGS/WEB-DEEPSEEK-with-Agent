@@ -242,19 +242,24 @@ function recordLoginFailure(ip) {
 }
 
 function lanAddresses() {
-  const found = [];
+  const byAddress = new Map();
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
+    const lower = name.toLowerCase();
+    let score = 10;
+    if (/wi-?fi|wlan|wireless|无线/.test(lower)) score = 100;
+    else if (/ethernet|以太网/.test(lower)) score = 80;
+    else if (/vethernet|vmware|virtualbox|hyper-v|loopback|tailscale|zerotier|docker/.test(lower)) score = -100;
     for (const info of interfaces[name] || []) {
       if (info.family !== "IPv4" || info.internal) continue;
-      if (!found.includes(info.address)) found.push(info.address);
+      const prev = byAddress.get(info.address);
+      if (!prev || score > prev.score) byAddress.set(info.address, { address: info.address, score });
     }
   }
-  found.sort((a, b) => {
-    const score = (ip) => ip.startsWith("192.168.") ? 0 : ip.startsWith("10.") ? 1 : ip.startsWith("172.") ? 2 : 3;
-    return score(a) - score(b);
-  });
-  return found;
+  // Prefer the real Wi-Fi adapter over Hyper-V / VPN / virtual switches.
+  return [...byAddress.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.address);
 }
 
 function lanUrl() {

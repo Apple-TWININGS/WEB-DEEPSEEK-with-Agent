@@ -30,6 +30,9 @@
     deepThink: false,
     webSearch: false,
     creativeMode: false,
+    speechRate: 1,
+    speechVoice: "",
+    autoSpeak: false,
     chatModel: "flash",
     agentModel: "pro",
     agentEffort: "high",
@@ -104,6 +107,7 @@
     previewArtifact: null,
     previewObjectUrl: null,
     viewingImage: null,
+    speech: { msgId: "", utterance: null, voices: [] },
     pendingImport: null,
     importSessions: [],
     fullAccess: { active: false, expiresAt: 0 },
@@ -2185,6 +2189,7 @@
     var isLast = index === activeConversation().messages.length - 1;
     return '<div class="msg-actions">' +
       '<button class="msg-action" type="button" data-action="copy-message" title="复制回答" aria-label="复制回答">' + icon("copy") + "</button>" +
+      '<button class="msg-action' + (state.speech && state.speech.msgId === msg.id ? " is-active" : "") + '" type="button" data-action="speak-message" title="朗读回答" aria-label="朗读回答" aria-pressed="' + (state.speech && state.speech.msgId === msg.id) + '">' + icon("volume") + "</button>" +
       '<button class="msg-action" type="button" data-action="regenerate" title="重新生成" aria-label="重新生成"' + (isLast ? "" : ' disabled style="opacity:.3"') + ">" + icon("refresh") + "</button>" +
       '<span class="msg-action-sep"></span>' +
       '<button class="msg-action' + (msg.feedback === "up" ? " is-active" : "") + '" type="button" data-action="feedback-up" title="有帮助" aria-label="有帮助" aria-pressed="' + (msg.feedback === "up") + '">' + icon("thumb-up") + "</button>" +
@@ -2809,6 +2814,7 @@
   }
 
   async function runTurn(conv, msg, mode, useApi) {
+    stopSpeech(true);
     var controller = new AbortController();
     state.streaming = {
       convId: conv.id,
@@ -2867,6 +2873,9 @@
       renderChat({ forceBottom: true });
       updateKeySettingsUI();
       if (msg.error) toast(msg.error, "error", 5000);
+      if (state.settings.autoSpeak && !msg.error && !msg.stopped && msg.content) {
+        setTimeout(function () { speakMessage(msg.id); }, 220);
+      }
     }
   }
 
@@ -3877,6 +3886,134 @@
     toast("已导出全部对话", "success");
   }
 
+  function speechText(markdown) {
+    return String(markdown || "")
+      .replace(/```[\s\S]*?```/g, " 代码块 ")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+      .replace(/[*_~]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 12000);
+  }
+
+  function speechVoices() {
+    if (!window.speechSynthesis) return [];
+    var all = window.speechSynthesis.getVoices() || [];
+    var zh = all.filter(function (v) {
+      return /^zh|chinese|中文|普通话|mandarin/i.test((v.lang || "") + " " + (v.name || ""));
+    });
+    return zh.length ? zh : all;
+  }
+
+  function refreshSpeechVoices() {
+    if (!els.speechVoiceSelect) return;
+    var voices = speechVoices();
+    state.speech.voices = voices;
+    var selected = state.settings.speechVoice || "";
+    els.speechVoiceSelect.innerHTML = '<option value="">系统默认声音</option>' +
+      voices.map(function (v) {
+        var name = v.name + (v.lang ? " · " + v.lang : "");
+        return '<option value="' + escapeAttr(v.voiceURI || v.name) + '">' + escapeHtml(name) + "</option>";
+      }).join("");
+    if (selected && voices.some(function (v) { return (v.voiceURI || v.name) === selected; })) {
+      els.speechVoiceSelect.value = selected;
+    } else {
+      state.settings.speechVoice = "";
+      els.speechVoiceSelect.value = "";
+    }
+  }
+
+  function updateSpeechUI() {
+    if (els.autoSpeakSwitch) {
+      var on = !!state.settings.autoSpeak;
+      els.autoSpeakSwitch.classList.toggle("is-on", on);
+      els.autoSpeakSwitch.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    if (els.speechRate) els.speechRate.value = String(state.settings.speechRate || 1);
+    if (els.speechRateValue) els.speechRateValue.textContent = Number(state.settings.speechRate || 1).toFixed(2).replace(/0$/, "") + "×";
+    if (els.speechHint) {
+      els.speechHint.textContent = window.speechSynthesis
+        ? "回答下方有喇叭按钮；自动朗读只朗读新生成的回答。"
+        : "当前浏览器不支持系统语音合成，请换 Chrome 或 Edge。";
+    }
+    if (els.speechStatus) {
+      els.speechStatus.className = "status-pill " + (window.speechSynthesis ? "is-ok" : "");
+      els.speechStatus.innerHTML = "<span></span>" + (window.speechSynthesis ? "就绪" : "不支持");
+    }
+  }
+
+  function markSpeechButton(msgId, active) {
+    $$('[data-action="speak-message"]').forEach(function (btn) {
+      var article = btn.closest(".message");
+      var on = !!(active && article && article.dataset.msgId === msgId);
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  function stopSpeech(silent) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    state.speech.msgId = "";
+    state.speech.utterance = null;
+    markSpeechButton("", false);
+    if (!silent) toast("已停止朗读");
+  }
+
+  function speakText(text, msgId) {
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+      toast("当前浏览器不支持语音合成", "error");
+      return;
+    }
+    var clean = speechText(text);
+    if (!clean) {
+      toast("这条回答没有可朗读的文字", "error");
+      return;
+    }
+    stopSpeech(true);
+    var utterance = new SpeechSynthesisUtterance(clean);
+    utterance.lang = "zh-CN";
+    utterance.rate = Number(state.settings.speechRate || 1);
+    var voiceId = state.settings.speechVoice || "";
+    var voice = (state.speech.voices || []).find(function (v) { return (v.voiceURI || v.name) === voiceId; }) ||
+      (state.speech.voices || [])[0];
+    if (voice) utterance.voice = voice;
+    utterance.onend = function () {
+      if (state.speech.utterance === utterance) {
+        state.speech.msgId = "";
+        state.speech.utterance = null;
+        markSpeechButton("", false);
+      }
+    };
+    utterance.onerror = function (event) {
+      if (event && event.error === "canceled") return;
+      if (state.speech.utterance === utterance) {
+        state.speech.msgId = "";
+        state.speech.utterance = null;
+        markSpeechButton("", false);
+        toast("朗读失败：" + ((event && event.error) || "未知错误"), "error");
+      }
+    };
+    state.speech.msgId = msgId || "";
+    state.speech.utterance = utterance;
+    markSpeechButton(msgId || "", true);
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function speakMessage(msgId) {
+    if (state.speech.msgId === msgId && state.speech.utterance) {
+      stopSpeech();
+      return;
+    }
+    var conv = activeConversation();
+    var msg = conv.messages.find(function (m) { return m.id === msgId; });
+    if (!msg || msg.streaming) return;
+    speakText(msg.content, msgId);
+  }
+
   function copyMessage(msgId) {
     var conv = activeConversation();
     var msg = conv.messages.find(function (m) { return m.id === msgId; });
@@ -4204,6 +4341,8 @@
     loadWorkspaceInfo();
     loadImportStatus();
     syncChatPromptUI();
+    updateSpeechUI();
+    refreshSpeechVoices();
     if (!els.settingsDialog.open) {
       els.settingsDialog.showModal();
       document.body.classList.add("dialog-open");
@@ -4737,6 +4876,7 @@
       var msgId = article && article.dataset.msgId;
       var action = actionBtn.dataset.action;
       if (action === "copy-message") copyMessage(msgId);
+      else if (action === "speak-message") speakMessage(msgId);
       else if (action === "edit-message") beginEditMessage(msgId);
       else if (action === "cancel-edit") cancelEditMessage(msgId);
       else if (action === "save-edit") saveEditedMessage(msgId);
@@ -4791,6 +4931,31 @@
     });
     els.saveChatPromptBtn.addEventListener("click", saveChatPrompt);
     els.resetChatPromptBtn.addEventListener("click", resetChatPrompt);
+    els.autoSpeakSwitch.addEventListener("click", function () {
+      state.settings.autoSpeak = !state.settings.autoSpeak;
+      updateSpeechUI();
+      scheduleSave();
+      toast(state.settings.autoSpeak ? "已开启自动朗读" : "已关闭自动朗读");
+    });
+    els.speechRate.addEventListener("input", function () {
+      state.settings.speechRate = Math.max(0.6, Math.min(1.8, Number(els.speechRate.value) || 1));
+      updateSpeechUI();
+      scheduleSave();
+    });
+    els.speechVoiceSelect.addEventListener("change", function () {
+      state.settings.speechVoice = els.speechVoiceSelect.value;
+      scheduleSave();
+      if (window.speechSynthesis) {
+        var sample = "你好，我是陈深。";
+        speakText(sample, "");
+      }
+    });
+    els.speechTestBtn.addEventListener("click", function () {
+      speakText("你好，我是陈深。这是一段语音朗读测试。", "");
+    });
+    if (window.speechSynthesis) {
+      window.speechSynthesis.addEventListener("voiceschanged", refreshSpeechVoices);
+    }
     els.saveKeyBtn.addEventListener("click", saveKey);
     els.clearKeyBtn.addEventListener("click", clearKey);
     els.testKeyBtn.addEventListener("click", testConnection);
@@ -4996,6 +5161,13 @@
     els.toastStack = $("#toastStack");
     els.contextMenu = $("#contextMenu");
     els.settingsDialog = $("#settingsDialog");
+    els.autoSpeakSwitch = $("#autoSpeakSwitch");
+    els.speechVoiceSelect = $("#speechVoiceSelect");
+    els.speechRate = $("#speechRate");
+    els.speechRateValue = $("#speechRateValue");
+    els.speechTestBtn = $("#speechTestBtn");
+    els.speechHint = $("#speechHint");
+    els.speechStatus = $("#speechStatus");
     els.chatSystemPromptInput = $("#chatSystemPromptInput");
     els.chatPromptStatus = $("#chatPromptStatus");
     els.saveChatPromptBtn = $("#saveChatPromptBtn");
