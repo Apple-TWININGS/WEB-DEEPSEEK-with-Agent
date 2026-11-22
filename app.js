@@ -3918,7 +3918,8 @@
       { id: "deepseek:tide", label: "暗潮 · DeepSeek 官方（男声）" },
       { id: "deepseek:stella", label: "海星 · DeepSeek 官方（女声）" },
       { id: "edge:zh-CN-YunxiNeural", label: "云希 · Edge（男声，联网）" },
-      { id: "edge:zh-CN-YunyangNeural", label: "白浪（近似）· Edge（男声，联网）" }
+      { id: "edge:zh-CN-YunjianNeural", label: "白浪（年轻近似）· Edge（男声，联网）" },
+      { id: "edge:zh-CN-YunyangNeural", label: "白浪（成熟近似）· Edge（男声，联网）" }
     ];
     var html = '<optgroup label="官方 / 云端音色">' + providerOptions.map(function (v) {
       return '<option value="' + escapeAttr(v.id) + '">' + escapeHtml(v.label) + "</option>";

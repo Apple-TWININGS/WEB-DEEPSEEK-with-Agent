@@ -2521,7 +2521,9 @@ const server = http.createServer(async (req, res) => {
         let result;
         if (voice === "deepseek:tide" || voice === "deepseek:stella") {
           result = await synthesizeDeepSeekTts(text, voice.slice("deepseek:".length));
-        } else if (voice === "edge:zh-CN-YunxiNeural" || voice === "edge:zh-CN-YunyangNeural") {
+        } else if (voice === "edge:zh-CN-YunxiNeural" ||
+                   voice === "edge:zh-CN-YunjianNeural" ||
+                   voice === "edge:zh-CN-YunyangNeural") {
           result = await synthesizeEdgeTts(text, voice.slice("edge:".length));
         } else {
           return sendJson(res, 400, { error: "不支持的音色。" });
