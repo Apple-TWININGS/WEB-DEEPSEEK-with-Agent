@@ -107,7 +107,7 @@
     previewArtifact: null,
     previewObjectUrl: null,
     viewingImage: null,
-    speech: { msgId: "", utterance: null, voices: [], audio: null, audioUrl: "" },
+    speech: { msgId: "", utterance: null, voices: [], audio: null, audioUrl: "", context: null, source: null },
     pendingImport: null,
     importSessions: [],
     fullAccess: { active: false, expiresAt: 0 },
@@ -3968,6 +3968,10 @@
 
   function stopSpeech(silent) {
     if (window.speechSynthesis) window.speechSynthesis.cancel();
+    if (state.speech.source) {
+      try { state.speech.source.stop(); } catch {}
+      state.speech.source = null;
+    }
     if (state.speech.audio) {
       try { state.speech.audio.pause(); } catch {}
       state.speech.audio = null;
@@ -3990,6 +3994,17 @@
     state.speech.token = token;
     markSpeechButton(msgId || "", true);
     try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error("当前浏览器不支持音频播放");
+      var ctx = state.speech.context;
+      if (!ctx) {
+        ctx = new AC();
+        state.speech.context = ctx;
+      }
+      // Unlock audio while the click is still a user gesture.
+      if (ctx.state === "suspended") {
+        try { await ctx.resume(); } catch (e) { /* decode/start may still work */ }
+      }
       var res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4003,28 +4018,27 @@
       }
       var blob = await res.blob();
       if (state.speech.token !== token) return;
-      var url = URL.createObjectURL(blob);
-      var audio = new Audio(url);
-      state.speech.audio = audio;
-      state.speech.audioUrl = url;
-      audio.onended = function () {
-        if (state.speech.audio === audio) {
+      var bytes = await blob.arrayBuffer();
+      if (state.speech.token !== token) return;
+      var audioBuffer = await new Promise(function (resolve, reject) {
+        try {
+          var p = ctx.decodeAudioData(bytes, resolve, reject);
+          if (p && typeof p.then === "function") p.then(resolve, reject);
+        } catch (e) { reject(e); }
+      });
+      if (state.speech.token !== token) return;
+      var source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.onended = function () {
+        if (state.speech.source === source) {
           state.speech.msgId = "";
-          state.speech.audio = null;
-          state.speech.audioUrl = "";
-          try { URL.revokeObjectURL(url); } catch {}
+          state.speech.source = null;
           markSpeechButton("", false);
         }
       };
-      audio.onerror = function () {
-        if (state.speech.audio === audio) {
-          state.speech.audio = null;
-          state.speech.msgId = "";
-          markSpeechButton("", false);
-          toast("音频播放失败", "error");
-        }
-      };
-      await audio.play();
+      state.speech.source = source;
+      source.start(0);
     } catch (e) {
       if (state.speech.token !== token) return;
       stopSpeech(true);
