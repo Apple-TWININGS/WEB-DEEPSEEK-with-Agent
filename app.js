@@ -2202,11 +2202,12 @@
     var agent = msg.agent;
     var isStreaming = !!msg.streaming;
     var hasContent = !!msg.content;
-    // While streaming, keep one stable text node. Re-rendering Markdown on
-    // every token replaces the whole subtree and makes text visibly shake.
+    // While streaming, completed Markdown blocks are rendered once and frozen;
+    // only the unfinished tail is repainted. This keeps live formatting without
+    // re-creating the whole subtree on every token.
     var contentHtml = hasContent
       ? (isStreaming
-        ? '<div class="stream-plain">' + escapeHtml(msg.content) + "</div>"
+        ? '<div class="md-stream-blocks"></div><div class="md-stream-tail stream-plain">' + escapeHtml(msg.content) + "</div>"
         : window.DSMarkdown.render(msg.content))
       : "";
     var placeholder = "";
@@ -2326,6 +2327,61 @@
     node.dataset[key] = String(current.length);
   }
 
+  // Split Markdown at blank lines, but never inside a fenced code block. This
+  // lets completed paragraphs/headings/lists be rendered once and frozen while
+  // only the unfinished tail is repainted.
+  function splitMarkdownBlocks(text) {
+    var lines = String(text || "").split("\n");
+    var blocks = [];
+    var current = [];
+    var fence = false;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (/^\s*```/.test(line)) fence = !fence;
+      if (!fence && !line.trim()) {
+        if (current.length) {
+          blocks.push(current.join("\n"));
+          current = [];
+        }
+      } else {
+        current.push(line);
+      }
+    }
+    if (current.length) blocks.push(current.join("\n"));
+    return blocks;
+  }
+
+  function renderStreamingMarkdown(md, content) {
+    if (!md || !content) return;
+    var wrapper = md.querySelector(".md-stream-blocks");
+    var tail = md.querySelector(".md-stream-tail");
+    if (!wrapper || !tail) {
+      md.innerHTML = '<div class="md-stream-blocks"></div><div class="md-stream-tail stream-plain"></div>';
+      wrapper = md.querySelector(".md-stream-blocks");
+      tail = md.querySelector(".md-stream-tail");
+      md.dataset.streamCount = "0";
+      md.dataset.streamFirst = "";
+    }
+    var blocks = splitMarkdownBlocks(content);
+    var complete = blocks.length > 1 ? blocks.slice(0, -1) : [];
+    var first = complete.length ? complete[0] : "";
+    var renderedCount = Number(md.dataset.streamCount || 0);
+    if (md.dataset.streamFirst !== first || complete.length < renderedCount) {
+      wrapper.innerHTML = "";
+      renderedCount = 0;
+      md.dataset.streamCount = "0";
+      md.dataset.streamFirst = first;
+    }
+    for (var i = renderedCount; i < complete.length; i++) {
+      var block = document.createElement("div");
+      block.className = "md-stream-block";
+      block.innerHTML = window.DSMarkdown.render(complete[i]);
+      wrapper.appendChild(block);
+    }
+    md.dataset.streamCount = String(complete.length);
+    tail.textContent = blocks.length ? blocks[blocks.length - 1] : "";
+  }
+
   function updateStreamingView(msg) {
     var node = document.querySelector('[data-msg-id="' + msg.id + '"]');
     if (!node) {
@@ -2340,13 +2396,7 @@
     if (md) {
       md.classList.add("is-streaming");
       if (msg.streaming) {
-        var plain = md.querySelector(".stream-plain");
-        if (!plain) {
-          md.innerHTML = '<div class="stream-plain"></div>';
-          plain = md.querySelector(".stream-plain");
-        }
-        if (plain.dataset.len == null) plain.dataset.len = String(plain.textContent.length);
-        appendStreamText(plain, msg.content, "len");
+        renderStreamingMarkdown(md, msg.content);
       } else {
         md.classList.remove("is-streaming");
         queueMarkdownRender(msg, md);
