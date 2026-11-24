@@ -261,6 +261,63 @@ async function synthesizeDeepSeekTts(text, voiceId) {
   return { buffer: Buffer.from(await res.arrayBuffer()), mime: "audio/wav" };
 }
 
+function extractPdfText(buffer) {
+  return new Promise((resolve, reject) => {
+    const file = path.join(ROOT, ".pdf-" + crypto.randomUUID() + ".pdf");
+    const py = process.env.DEEPSEEK_PDF_PYTHON || process.env.DEEPSEEK_TTS_PYTHON || "python";
+    const script = [
+      "import fitz, json, sys",
+      "doc = fitz.open(sys.argv[1])",
+      "text = '\\n\\n'.join(page.get_text('text') for page in doc)",
+      "print(json.dumps({'pages': doc.page_count, 'text': text[:500000]}, ensure_ascii=False))",
+    ].join("\n");
+    fs.writeFile(file, buffer, (writeErr) => {
+      if (writeErr) {
+        reject(Object.assign(new Error("PDF 临时文件写入失败：" + writeErr.message), { status: 500 }));
+        return;
+      }
+      const child = spawn(py, ["-c", script, file], {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      let err = "";
+      const cleanup = () => fsp.rm(file, { force: true }).catch(() => {});
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        cleanup();
+        reject(Object.assign(new Error("PDF 解析超时。"), { status: 504 }));
+      }, 60000);
+      child.stdout.on("data", (chunk) => { out += chunk.toString("utf8"); });
+      child.stderr.on("data", (chunk) => { err += chunk.toString("utf8"); });
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        cleanup();
+        reject(Object.assign(new Error("无法启动 Python / PyMuPDF：" + e.message), { status: 501 }));
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        cleanup();
+        if (code !== 0) {
+          reject(Object.assign(new Error(truncate(err.trim() || "PDF 解析失败。", 400)), { status: 502 }));
+          return;
+        }
+        try {
+          const data = JSON.parse(out.trim());
+          const text = String(data.text || "").trim();
+          if (!text) {
+            reject(Object.assign(new Error("这个 PDF 没有可提取文字，可能是扫描件；需要 OCR。"), { status: 422 }));
+            return;
+          }
+          resolve({ text, pages: Number(data.pages) || 0 });
+        } catch (e) {
+          reject(Object.assign(new Error("PDF 解析结果异常：" + e.message), { status: 502 }));
+        }
+      });
+    });
+  });
+}
+
 function synthesizeEdgeTts(text, voiceId) {
   return new Promise((resolve, reject) => {
     // Windows can deny the Python child write access to Temp/LocalAppData
@@ -2307,7 +2364,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && !sameOrigin(req)) {
     return sendJson(res, 403, { error: "跨站请求已被拒绝。" });
   }
-  const isOfficeUpload = req.method === "POST" && /^\/api\/extract\/(?:pptx|office)$/.test(url.pathname) &&
+  const isOfficeUpload = req.method === "POST" && /^\/api\/extract\/(?:pdf|pptx|office)$/.test(url.pathname) &&
     /^(application\/octet-stream|application\/zip|application\/vnd\.openxmlformats-officedocument\.(?:presentationml\.presentation|wordprocessingml\.document|spreadsheetml\.sheet))/i.test(String(req.headers["content-type"] || ""));
   if (req.method === "POST" && !isJsonRequest(req) && !isOfficeUpload) {
     return sendJson(res, 415, { error: "POST 请求必须使用 application/json。" });
@@ -2487,6 +2544,23 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, filename, slides: result.slides, text: result.text });
       } catch (err) {
         return sendJson(res, err.status || 400, { error: "解析 PPTX 失败：" + err.message });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/extract/pdf") {
+      let filename = "";
+      try { filename = decodeURIComponent(String(req.headers["x-file-name"] || "")); } catch { filename = ""; }
+      if (!/\.pdf$/i.test(filename)) {
+        return sendJson(res, 400, { error: "只支持 .pdf 文件。" });
+      }
+      try {
+        const buffer = await readRawBody(req, 28 * 1024 * 1024);
+        const result = await extractPdfText(buffer);
+        return sendJson(res, 200, {
+          ok: true, filename, type: "pdf", pages: result.pages, text: result.text,
+        });
+      } catch (err) {
+        return sendJson(res, err.status || 400, { error: "解析 PDF 失败：" + err.message });
       }
     }
 

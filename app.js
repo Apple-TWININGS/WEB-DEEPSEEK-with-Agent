@@ -2671,6 +2671,27 @@
         if (/^image\//.test(f.type || "")) {
           var image = await readImageFile(f);
           state.attachments.push(image);
+        } else if (/\.pdf$/i.test(f.name || "")) {
+          if (f.size > 28 * 1024 * 1024) {
+            toast("「" + f.name + "」超过 28 MB，未添加", "error");
+            continue;
+          }
+          var pdfRes = await fetch("/api/extract/pdf", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "X-File-Name": encodeURIComponent(f.name)
+            },
+            body: f
+          });
+          if (pdfRes.status === 401) { showLoginScreen(); continue; }
+          var pdfData = await pdfRes.json().catch(function () { return {}; });
+          if (!pdfRes.ok) throw new Error(pdfData.error || "PDF 解析失败");
+          state.attachments.push({
+            id: uid("att"), kind: "file", name: f.name, size: f.size,
+            content: String(pdfData.text || "").slice(0, 500000)
+          });
+          toast("已提取 " + (pdfData.pages || "?") + " 页 PDF 文字", "success");
         } else if (/\.pptx$/i.test(f.name || "")) {
           if (f.size > 28 * 1024 * 1024) {
             toast("「" + f.name + "」超过 28 MB，未添加", "error");
