@@ -266,10 +266,10 @@ function extractPdfText(buffer) {
     const file = path.join(ROOT, ".pdf-" + crypto.randomUUID() + ".pdf");
     const py = process.env.DEEPSEEK_PDF_PYTHON || process.env.DEEPSEEK_TTS_PYTHON || "python";
     const script = [
-      "import fitz, json, sys",
-      "doc = fitz.open(sys.argv[1])",
+      "import pymupdf, json, sys",
+      "doc = pymupdf.open(sys.argv[1])",
       "text = '\\n\\n'.join(page.get_text('text') for page in doc)",
-      "print(json.dumps({'pages': doc.page_count, 'text': text[:500000]}, ensure_ascii=False))",
+      "print(json.dumps({'pages': doc.page_count, 'text': text[:500000]}, ensure_ascii=True))",
     ].join("\n");
     fs.writeFile(file, buffer, (writeErr) => {
       if (writeErr) {
