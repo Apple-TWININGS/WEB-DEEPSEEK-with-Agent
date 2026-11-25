@@ -59,6 +59,7 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
     <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 10v4h3l4 3V7L7 10H4Z"/><path d="M14 9a4 4 0 0 1 0 6M16.5 6.5a8 8 0 0 1 0 11"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 6.8"/></symbol>
+    <symbol id="i-todo" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8 9 1.5 1.5L12 8M14 9.5h3M8 15l1.5 1.5L12 14M14 15.5h3"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M19.2 15a8 8 0 1 1-.7-8.5L20 11"/></symbol>
     <symbol id="i-thumb-up" viewBox="0 0 24 24"><path d="M7 10v10H4V10h3ZM7 19c2 1.4 4 2 6.2 2h2.3a3 3 0 0 0 3-2.4l1.2-6A2.4 2.4 0 0 0 17.3 9H14l.5-3.2A2.5 2.5 0 0 0 12 3.2L7 10"/></symbol>
     <symbol id="i-thumb-down" viewBox="0 0 24 24"><path d="M17 14V4h3v10h-3ZM17 5c-2-1.4-4-2-6.2-2H8.5a3 3 0 0 0-3 2.4l-1.2 6A2.4 2.4 0 0 0 6.7 15H10l-.5 3.2A2.5 2.5 0 0 0 12 20.8L17 14"/></symbol>
@@ -166,6 +167,9 @@
             <svg><use href="#i-folder"/></svg><span id="workspaceChipText">工作区</span>
           </button>
           
+          <button class="icon-btn" id="todoBtn" type="button" aria-label="待办事项" title="待办事项">
+            <svg><use href="#i-todo"/></svg>
+          </button>
           <button class="icon-btn" id="contextInsightsBtn" type="button" aria-label="上下文洞察" title="上下文洞察">
             <svg><use href="#i-brain"/></svg>
           </button>
@@ -323,6 +327,31 @@
 
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
   <div class="context-menu" id="contextMenu" role="menu" hidden></div>
+
+  <dialog class="dialog todo-dialog" id="todoDialog" aria-labelledby="todoTitle">
+    <div class="dialog-head">
+      <div>
+        <p class="dialog-kicker">FOCUS · TODO</p>
+        <h2 id="todoTitle">待办事项</h2>
+      </div>
+      <button class="icon-btn dialog-close" type="button" data-close-dialog="todoDialog" aria-label="关闭待办">
+        <svg><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="todo-body">
+      <form class="todo-form" id="todoForm">
+        <input class="todo-input" id="todoInput" type="text" maxlength="240" autocomplete="off" placeholder="写一件要做的事…" aria-label="新待办">
+        <button class="btn btn-primary todo-add" id="todoAdd" type="submit">添加</button>
+      </form>
+      <div class="todo-list" id="todoList"></div>
+      <div class="todo-empty" id="todoEmpty">还没有待办，先写一件小事。</div>
+    </div>
+    <div class="dialog-actions todo-actions">
+      <span class="todo-stats" id="todoStats">0 项</span>
+      <button class="btn btn-ghost btn-small" id="todoClearDone" type="button">清除已完成</button>
+      <button class="btn btn-ghost" type="button" data-close-dialog="todoDialog">关闭</button>
+    </div>
+  </dialog>
 
   <dialog class="dialog settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
     <div class="dialog-head">

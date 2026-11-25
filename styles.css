@@ -2451,6 +2451,80 @@ body.has-wallpaper .dialog::backdrop { background: rgba(9, 13, 22, .32); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 16px 22px 20px; }
 
 /* ============================================================
+   Todo list
+   ============================================================ */
+.todo-dialog { width: min(560px, calc(100vw - 30px)); }
+.todo-body {
+  max-height: min(58dvh, 560px);
+  overflow-y: auto;
+  padding: 17px 22px 4px;
+}
+.todo-form { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.todo-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.todo-input:focus { outline: none; border-color: var(--text-2); }
+.todo-add { flex: none; height: 38px; }
+.todo-list { display: flex; flex-direction: column; }
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 1px;
+  border-bottom: 1px solid var(--line);
+}
+.todo-item:last-child { border-bottom: 0; }
+.todo-check {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--surface);
+  cursor: pointer;
+}
+.todo-check svg { width: 12px; height: 12px; stroke-width: 2.4; }
+.todo-item.is-done .todo-check { border-color: var(--text); background: var(--text); }
+.todo-text { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.todo-item.is-done .todo-text { color: var(--muted); text-decoration: line-through; }
+.todo-delete {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: .55;
+}
+.todo-delete svg { width: 14px; height: 14px; }
+.todo-delete:hover { color: var(--text); background: var(--surface-2); opacity: 1; }
+.todo-empty { padding: 26px 6px 30px; color: var(--muted); font-size: 11.5px; text-align: center; }
+.todo-actions { align-items: center; }
+.todo-stats { margin-right: auto; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.todo-actions .btn:disabled { opacity: .35; cursor: default; }
+
+/* ============================================================
    LAN login + mobile access card
    ============================================================ */
 .login-screen {

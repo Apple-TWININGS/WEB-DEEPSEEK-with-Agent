@@ -6,6 +6,7 @@
   "use strict";
 
   var STORAGE_KEY = "deepseek-web.state.v1";
+  var TODO_STORAGE_KEY = "deepseek-web.todos.v1";
   var VERSION = 1;
   var DEFAULT_WALLPAPER = {
     enabled: false,
@@ -94,6 +95,7 @@
     streaming: null,
     pendingConfirm: null,
     attachments: [],
+    todos: [],
     uploading: 0,
     searchQuery: "",
     saveTimer: null,
@@ -133,6 +135,99 @@
   var now = function () { return Date.now(); };
 
   var els = {};
+
+  /* ============================================================
+     Todo list
+     ============================================================ */
+  function loadTodos() {
+    var saved = [];
+    try {
+      saved = JSON.parse(localStorage.getItem(TODO_STORAGE_KEY) || "[]");
+    } catch (e) {
+      saved = [];
+    }
+    state.todos = Array.isArray(saved) ? saved
+      .filter(function (todo) { return todo && typeof todo.text === "string" && todo.text.trim(); })
+      .slice(0, 200)
+      .map(function (todo) {
+        return {
+          id: String(todo.id || uid("todo")),
+          text: todo.text.trim().slice(0, 240),
+          done: !!todo.done,
+          createdAt: Number(todo.createdAt) || now()
+        };
+      }) : [];
+  }
+
+  function saveTodos() {
+    try {
+      localStorage.setItem(TODO_STORAGE_KEY, JSON.stringify(state.todos));
+    } catch (e) { /* storage may be unavailable */ }
+  }
+
+  function renderTodos() {
+    if (!els.todoList) return;
+    var total = state.todos.length;
+    var done = state.todos.filter(function (todo) { return todo.done; }).length;
+    els.todoList.innerHTML = state.todos.map(function (todo) {
+      return '<div class="todo-item' + (todo.done ? " is-done" : "") + '" data-todo-id="' + escapeAttr(todo.id) + '">' +
+        '<button class="todo-check" type="button" data-toggle-todo="' + escapeAttr(todo.id) + '" aria-pressed="' + (todo.done ? "true" : "false") + '" aria-label="' + (todo.done ? "标记为未完成" : "标记为已完成") + '">' +
+          (todo.done ? icon("check") : "") +
+        "</button>" +
+        '<span class="todo-text">' + escapeHtml(todo.text) + "</span>" +
+        '<button class="todo-delete" type="button" data-delete-todo="' + escapeAttr(todo.id) + '" aria-label="删除待办" title="删除">' + icon("trash") + "</button>" +
+      "</div>";
+    }).join("");
+    if (els.todoEmpty) els.todoEmpty.hidden = total > 0;
+    if (els.todoStats) els.todoStats.textContent = total ? done + " / " + total + " 已完成" : "0 项";
+    if (els.todoClearDone) els.todoClearDone.disabled = done === 0;
+  }
+
+  function openTodoDialog() {
+    closeContextMenu();
+    loadTodos();
+    renderTodos();
+    if (!els.todoDialog.open) {
+      els.todoDialog.showModal();
+      document.body.classList.add("dialog-open");
+    }
+    setTimeout(function () {
+      if (els.todoInput) els.todoInput.focus();
+    }, 60);
+  }
+
+  function addTodo(text) {
+    var value = String(text || "").trim();
+    if (!value) return;
+    state.todos.unshift({ id: uid("todo"), text: value.slice(0, 240), done: false, createdAt: now() });
+    state.todos = state.todos.slice(0, 200);
+    saveTodos();
+    renderTodos();
+    if (els.todoInput) {
+      els.todoInput.value = "";
+      els.todoInput.focus();
+    }
+  }
+
+  function toggleTodo(id) {
+    state.todos = state.todos.map(function (todo) {
+      return todo.id === id ? Object.assign({}, todo, { done: !todo.done }) : todo;
+    });
+    saveTodos();
+    renderTodos();
+  }
+
+  function deleteTodo(id) {
+    state.todos = state.todos.filter(function (todo) { return todo.id !== id; });
+    saveTodos();
+    renderTodos();
+  }
+
+  function clearDoneTodos() {
+    state.todos = state.todos.filter(function (todo) { return !todo.done; });
+    saveTodos();
+    renderTodos();
+  }
 
   /* ============================================================
      Utilities
@@ -4802,6 +4897,27 @@
     els.exportBtn.addEventListener("click", function () { exportConversation(); });
     els.topSettingsBtn.addEventListener("click", openSettings);
     els.connectionChip.addEventListener("click", openSettings);
+    els.todoBtn.addEventListener("click", openTodoDialog);
+    els.todoForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      addTodo(els.todoInput.value);
+    });
+    els.todoList.addEventListener("click", function (e) {
+      var toggle = e.target.closest("[data-toggle-todo]");
+      if (toggle) {
+        toggleTodo(toggle.dataset.toggleTodo);
+        return;
+      }
+      var remove = e.target.closest("[data-delete-todo]");
+      if (remove) deleteTodo(remove.dataset.deleteTodo);
+    });
+    els.todoClearDone.addEventListener("click", clearDoneTodos);
+    els.todoDialog.addEventListener("click", function (e) {
+      if (e.target === els.todoDialog) closeDialog(els.todoDialog);
+    });
+    els.todoDialog.addEventListener("close", function () {
+      if (!document.querySelector("dialog[open]")) document.body.classList.remove("dialog-open");
+    });
 
     /* Wallpapers */
     els.wallpaperInput.addEventListener("change", function () { addWallpapers(els.wallpaperInput.files); });
@@ -5237,6 +5353,14 @@
     els.contextInsightsDialog = $("#contextInsightsDialog");
     els.contextInsightsBody = $("#contextInsightsBody");
     els.contextInsightsBtn = $("#contextInsightsBtn");
+    els.todoBtn = $("#todoBtn");
+    els.todoDialog = $("#todoDialog");
+    els.todoForm = $("#todoForm");
+    els.todoInput = $("#todoInput");
+    els.todoList = $("#todoList");
+    els.todoEmpty = $("#todoEmpty");
+    els.todoStats = $("#todoStats");
+    els.todoClearDone = $("#todoClearDone");
     els.artifactPreviewDialog = $("#artifactPreviewDialog");
     els.artifactPreviewTitle = $("#artifactPreviewTitle");
     els.artifactPreviewName = $("#artifactPreviewName");
@@ -5354,6 +5478,7 @@
   function init() {
     cacheElements();
     loadState();
+    loadTodos();
     applyTheme();
     bindEvents();
     initMarkdownWorker();
